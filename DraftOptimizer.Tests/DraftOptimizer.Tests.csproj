@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <ItemGroup><ProjectReference Include="..\DraftOptimizer.Core\DraftOptimizer.Core.csproj"/><Content Include="..\DraftOptimizer\DraftOptimizer\Data\current-patch.json" Link="Data\current-patch.json" CopyToOutputDirectory="PreserveNewest"/><Content Include="Fixtures\*.json" CopyToOutputDirectory="PreserveNewest"/></ItemGroup>
+  <ItemGroup><Compile Include="..\DraftOptimizer\DraftOptimizer\ChampionListItem.cs" Link="ChampionListItem.cs" /></ItemGroup>
+</Project>

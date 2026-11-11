@@ -1,0 +1,73 @@
+[
+  {
+    "title": "Pantheon",
+    "associatedMaps": [
+      11
+    ],
+    "associatedChampions": [
+      80
+    ],
+    "blocks": [
+      {
+        "type": "Core",
+        "items": [
+          {
+            "id": "6697",
+            "count": 1
+          },
+          {
+            "id": "6610",
+            "count": 1
+          },
+          {
+            "id": "3742",
+            "count": 1
+          },
+          {
+            "id": "6699",
+            "count": 1
+          }
+        ],
+        "hideIfSummonerSpell": "",
+        "showIfSummonerSpell": ""
+      },
+      {
+        "type": "Finales",
+        "items": [
+          {
+            "id": "3142",
+            "count": 1
+          }
+        ],
+        "hideIfSummonerSpell": "",
+        "showIfSummonerSpell": ""
+      },
+      {
+        "type": "Situacional",
+        "items": [
+          {
+            "id": "3814",
+            "count": 1
+          },
+          {
+            "id": "6695",
+            "count": 1
+          }
+        ],
+        "hideIfSummonerSpell": "",
+        "showIfSummonerSpell": ""
+      },
+      {
+        "type": "Botas",
+        "items": [
+          {
+            "id": "3111",
+            "count": 1
+          }
+        ],
+        "hideIfSummonerSpell": "",
+        "showIfSummonerSpell": ""
+      }
+    ]
+  }
+]
