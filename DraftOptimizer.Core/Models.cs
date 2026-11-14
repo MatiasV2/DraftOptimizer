@@ -86,6 +86,7 @@ public sealed class DraftSession
     public List<Player> TheirTeam { get; set; } = [];
     public List<List<DraftAction>> Actions { get; set; } = [];
     [JsonIgnore] public DraftAction? CurrentPick => Actions.SelectMany(x => x).FirstOrDefault(x => x.ActorCellId == LocalPlayerCellId && x.Type == "pick" && x.IsInProgress && !x.Completed);
+    [JsonIgnore] public DraftAction? CurrentBan => Actions.SelectMany(x => x).FirstOrDefault(x => x.ActorCellId == LocalPlayerCellId && x.Type == "ban" && x.IsInProgress && !x.Completed);
     [JsonIgnore] public int LocalVisibleChampion => CurrentPick is { ChampionId: > 0 } action ? action.ChampionId : MyTeam.FirstOrDefault(p => p.CellId == LocalPlayerCellId)?.VisibleChampion ?? 0;
     [JsonIgnore] public int LocalLockedChampion => Actions.SelectMany(a => a).FirstOrDefault(a => a.ActorCellId == LocalPlayerCellId && a.Type == "pick" && a.Completed && a.ChampionId > 0)?.ChampionId ??
         (IsFinalization ? MyTeam.FirstOrDefault(p => p.CellId == LocalPlayerCellId)?.ChampionId ?? 0 : 0);
@@ -97,6 +98,7 @@ public sealed class DraftSession
     [JsonIgnore] public bool HasCompositionPicks => MyTeam.Where(p => p.CellId != LocalPlayerCellId).Concat(TheirTeam).Any(p => p.ChampionId > 0) ||
         Actions.SelectMany(a => a).Any(a => a.Type == "pick" && a.Completed && a.ChampionId > 0) ||
         (IsFinalization && MyTeam.Any(p => p.ChampionId > 0));
+    public bool AllyHasPickIntent(int championId) => MyTeam.Any(p => p.CellId != LocalPlayerCellId && p.ChampionPickIntent == championId);
     public HashSet<int> Unavailable(bool includeLocalPlayer = true) => MyTeam.Where(p => includeLocalPlayer || p.CellId != LocalPlayerCellId).Concat(TheirTeam).Where(x => x.ChampionId > 0).Select(x => x.ChampionId)
         .Concat(Actions.SelectMany(x => x).Where(x => x.Type == "ban" && x.ChampionId > 0).Select(x => x.ChampionId)).ToHashSet();
 }
@@ -122,6 +124,7 @@ public sealed class DraftTimer
         return Math.Max(0, remaining - Math.Max(0, elapsed));
     }
 }
+
 public sealed record Suggestion(Champion Champion, double BaseWinrate, int Games, double Score, int ContextSamples)
 {
     public bool IsAram { get; init; }

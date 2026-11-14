@@ -41,9 +41,11 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<int, ChampionListItem> _rowsById = [];
     private readonly Dictionary<(string Patch, int ChampionId), Suggestion> _aramStats = [];
     private readonly LoadoutCoordinator _loadout = new();
+    private (long GameId, int ActionId)? _autoBanAttempted;
     private ProfileStore Store => new(_directory);
     private Champion? SelectedChampion => ChampionBox.SelectedItem as Champion;
     private Role SelectedRole => RoleBox.SelectedItem is Role r ? r : Role.Middle;
+    private Role SelectedBanRole => BanRoleBox.SelectedItem is Role role ? role : SelectedRole;
 
     public MainWindow()
     {
@@ -60,6 +62,7 @@ public sealed partial class MainWindow : Window
     {
         ProfileRoleBox.ItemsSource = Enum.GetValues<Role>(); ProfileRoleBox.SelectedItem = Role.Middle;
         RoleBox.ItemsSource = Enum.GetValues<Role>(); RoleBox.SelectedItem = Role.Middle;
+        BanRoleBox.ItemsSource = Enum.GetValues<Role>(); BanRoleBox.SelectedItem = Role.Middle;
         Directory.CreateDirectory(_directory);
         var settings = Path.Combine(_directory, "lockfile-path.txt");
         if (File.Exists(settings)) _lcu.LockfilePath = await File.ReadAllTextAsync(settings);
@@ -98,6 +101,7 @@ public sealed partial class MainWindow : Window
             var old = _data; _data = data;
             _initializing = true;
             ChampionBox.ItemsSource = data.Champions; ProfileChampionBox.ItemsSource = data.Champions;
+            BanChampionBox.ItemsSource = data.Champions; RefreshBanPriorities();
             ((ProfileChampionConverter)Root.Resources["ProfileChampionConverter"]).Catalogue = data;
             ProfilesBox.ItemsSource = null; ProfilesBox.ItemsSource = _profiles;
             PrimaryBox.ItemsSource = data.Choices("runePathData"); SecondaryBox.ItemsSource = data.Choices("runePathData");
@@ -160,7 +164,8 @@ public sealed partial class MainWindow : Window
                 _autoDraft.PauseCurrentTurn();
                 AutomationText.Text = "ARAM: selección automática desactivada; usa los cambios disponibles en el banco.";
             }
-            else await AdvanceAutomationAsync();
+            else if (_draft?.CurrentBan != null) await AdvanceBanAsync();
+            else { _autoBanAttempted = null; await AdvanceAutomationAsync(); }
             AdvanceLoadout(state);
         }
         catch (Exception) when (!_closed.IsCancellationRequested)
@@ -558,12 +563,15 @@ public sealed partial class MainWindow : Window
         AutoLockBox.IsChecked = _favorites.AutoLockEnabled;
         AutoLockSecondsBox.Value = Math.Clamp(_favorites.AutoLockSeconds, 1, 30);
         AutoLoadoutBox.IsChecked = _favorites.AutoLoadoutEnabled;
+        AutoBanBox.IsChecked = _favorites.AutoBanEnabled;
         AutoHoverBox.IsEnabled = _favoritesValid;
         AutoLockBox.IsEnabled = _favoritesValid && _favorites.AutoHoverEnabled;
         AutoLockSecondsBox.IsEnabled = _favoritesValid && _favorites.AutoHoverEnabled;
         AutoLoadoutBox.IsEnabled = _favoritesValid;
+        AutoBanBox.IsEnabled = _favoritesValid;
         _updatingAutomation = false;
         UpdateFavoritesText();
+        RefreshBanPriorities();
     }
     private async Task SaveFavoritesAsync()
     {
@@ -584,6 +592,7 @@ public sealed partial class MainWindow : Window
         _favorites.AutoHoverEnabled = AutoHoverBox.IsChecked == true;
         _favorites.AutoLockEnabled = AutoLockBox.IsChecked == true;
         _favorites.AutoLoadoutEnabled = AutoLoadoutBox.IsChecked == true;
+        _favorites.AutoBanEnabled = AutoBanBox.IsChecked == true;
         if (!_favorites.AutoLoadoutEnabled) _loadout.Reset();
         AutoLockBox.IsEnabled = _favoritesValid && _favorites.AutoHoverEnabled;
         UpdateAutomationSummary(SelectedRole);
@@ -614,6 +623,93 @@ public sealed partial class MainWindow : Window
         }, "Favoritos guardados", showSuccess: false);
         _lastSuggestions = null;
         RefreshSuggestions(); UpdateFavoritesText();
+    }
+    private void BanRoleChanged(object sender, SelectionChangedEventArgs e) => RefreshBanPriorities();
+    private void RefreshBanPriorities()
+    {
+        if (BanPriorityList == null || BanChampionBox == null) return;
+        var selectedId = (BanPriorityList.SelectedItem as Champion)?.Id;
+        var champions = _data == null ? new List<Champion>() : _favorites.BanPrioritiesFor(SelectedBanRole)
+            .Select(id => _data.Champions.FirstOrDefault(champion => champion.Id == id)).OfType<Champion>().ToList();
+        BanPriorityList.ItemsSource = champions;
+        if (selectedId.HasValue) BanPriorityList.SelectedItem = champions.FirstOrDefault(champion => champion?.Id == selectedId.Value);
+        if (BanChampionBox.SelectedItem is not Champion || _data?.Champions.Contains((Champion)BanChampionBox.SelectedItem) != true)
+            BanChampionBox.SelectedItem = _data?.Champions.FirstOrDefault();
+        BanChampionBox.IsEnabled = _favoritesValid && _data != null;
+    }
+    private async Task EditBanPrioritiesAsync(Action<List<int>> edit)
+    {
+        var role = SelectedBanRole;
+        await RunAsync(async () =>
+        {
+            if (!_favoritesValid) throw new InvalidOperationException("Recupera favorites.json antes de modificar la prioridad de baneos.");
+            var priorities = _favorites.BanPrioritiesFor(role).ToList();
+            var previous = priorities.ToArray();
+            edit(priorities);
+            if (priorities.SequenceEqual(previous)) return;
+            _favorites.BanPriorities[role] = priorities;
+            await SaveFavoritesAsync();
+        }, "Prioridad de baneos guardada", showSuccess: false);
+        RefreshBanPriorities();
+    }
+    private async void AddBanPriorityClick(object sender, RoutedEventArgs e)
+    {
+        if (BanChampionBox.SelectedItem is not Champion champion) return;
+        await EditBanPrioritiesAsync(priorities => { if (!priorities.Contains(champion.Id)) priorities.Add(champion.Id); });
+    }
+    private async void MoveBanPriorityUpClick(object sender, RoutedEventArgs e)
+    {
+        var index = BanPriorityList.SelectedIndex;
+        await EditBanPrioritiesAsync(priorities => { if (index > 0 && index < priorities.Count) (priorities[index - 1], priorities[index]) = (priorities[index], priorities[index - 1]); });
+        if (index > 0) BanPriorityList.SelectedIndex = index - 1;
+    }
+    private async void MoveBanPriorityDownClick(object sender, RoutedEventArgs e)
+    {
+        var index = BanPriorityList.SelectedIndex;
+        await EditBanPrioritiesAsync(priorities => { if (index >= 0 && index + 1 < priorities.Count) (priorities[index + 1], priorities[index]) = (priorities[index], priorities[index + 1]); });
+        if (index >= 0 && index + 1 < _favorites.BanPrioritiesFor(SelectedBanRole).Count) BanPriorityList.SelectedIndex = index + 1;
+    }
+    private async void RemoveBanPriorityClick(object sender, RoutedEventArgs e)
+    {
+        var index = BanPriorityList.SelectedIndex;
+        await EditBanPrioritiesAsync(priorities => { if (index >= 0 && index < priorities.Count) priorities.RemoveAt(index); });
+        if (index >= 0 && BanPriorityList.Items.Count > 0) BanPriorityList.SelectedIndex = Math.Min(index, BanPriorityList.Items.Count - 1);
+    }
+    private async Task AdvanceBanAsync()
+    {
+        var draft = _draft;
+        var action = draft?.CurrentBan;
+        if (draft == null || action == null) { _autoBanAttempted = null; return; }
+        var turn = (draft.GameId, action.Id);
+        if (_autoBanAttempted == turn) return;
+        if (action.ChampionId > 0)
+        {
+            _autoBanAttempted = turn;
+            BanStatusText.Text = "Ya hay un campeón elegido para este ban; no se cambiará la selección actual.";
+            return;
+        }
+        var role = SelectedRole;
+        var mine = draft.MyTeam.FirstOrDefault(player => player.CellId == draft.LocalPlayerCellId);
+        if (mine != null && Roles.TryParse(mine.AssignedPosition, out var assignedRole)) role = assignedRole;
+        if (!_favoritesValid) { BanStatusText.Text = "Baneo automático detenido: revisa favorites.json."; return; }
+        if (!_favorites.AutoBanEnabled) { BanStatusText.Text = $"Turno de ban · {role}. Baneo automático desactivado."; return; }
+        var priorities = _favorites.BanPrioritiesFor(role);
+        if (priorities.Count == 0) { BanStatusText.Text = $"No hay prioridades de baneos configuradas para {role}."; return; }
+        try
+        {
+            var bannable = await _lcu.BannableAsync(_closed.Token);
+            if (_closed.IsCancellationRequested || _draft?.GameId != draft.GameId || _draft.CurrentBan?.Id != action.Id) return;
+            var unavailable = draft.Unavailable();
+            var championId = priorities.FirstOrDefault(id => bannable.Contains(id) && !unavailable.Contains(id) && !draft.AllyHasPickIntent(id));
+            if (championId <= 0) { BanStatusText.Text = $"Ninguna prioridad de {role} se puede banear sin afectar una selección aliada."; return; }
+            _autoBanAttempted = turn;
+            var sent = await _lcu.AutomaticBanAsync(draft.GameId, action.Id, championId,
+                () => !_closed.IsCancellationRequested && !_busy && _favoritesValid && _favorites.AutoBanEnabled && _favorites.BanPrioritiesFor(role).Contains(championId), _closed.Token);
+            if (!sent) { _autoBanAttempted = null; BanStatusText.Text = "No se envió el ban: el turno cambió, el campeón dejó de estar disponible o un compañero lo preseleccionó."; return; }
+            BanStatusText.Text = $"Baneado automáticamente: {_data?.NameOf(championId) ?? championId.ToString()} · prioridad {role}.";
+        }
+        catch (OperationCanceledException) when (_closed.IsCancellationRequested) { }
+        catch (Exception ex) { BanStatusText.Text = "Baneo automático pausado. " + ex.Message; }
     }
     private async Task AdvanceAutomationAsync()
     {

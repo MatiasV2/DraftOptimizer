@@ -196,6 +196,30 @@
           </ScrollViewer>
         </Border>
       </TabViewItem>
+      <TabViewItem IsClosable="False" Header="Baneos prioritarios">
+        <Border Background="#121A28" CornerRadius="12" Padding="20">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="14" MaxWidth="720" HorizontalAlignment="Left">
+              <StackPanel Spacing="7">
+                <TextBlock Text="BANEOS POR PRIORIDAD" FontSize="13" Foreground="#6CE0C1" CharacterSpacing="150" />
+                <TextBlock Text="Configura una lista para cada línea" FontSize="24" FontWeight="SemiBold" />
+              </StackPanel>
+              <TextBlock Text="Ordena los campeones que quieres banear para cada línea. Si un compañero los tiene preseleccionados, DraftOptimizer los saltará." TextWrapping="Wrap" FontSize="13" />
+              <CheckBox x:Name="AutoBanBox" Content="Banear automáticamente el siguiente campeón disponible" Checked="AutomationChanged" Unchecked="AutomationChanged" />
+              <ComboBox x:Name="BanRoleBox" Header="Línea" SelectionChanged="BanRoleChanged" />
+              <ComboBox x:Name="BanChampionBox" Header="Campeón que añadir" />
+              <Button Content="Añadir a la prioridad" Click="AddBanPriorityClick" HorizontalAlignment="Left" />
+              <ListView x:Name="BanPriorityList" Height="220" SelectionMode="Single" AutomationProperties.Name="Prioridad de baneos" />
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Subir" Click="MoveBanPriorityUpClick" />
+                <Button Content="Bajar" Click="MoveBanPriorityDownClick" />
+                <Button Content="Quitar" Click="RemoveBanPriorityClick" />
+              </StackPanel>
+              <TextBlock x:Name="BanStatusText" Text="Configura una lista por línea. El baneador automático está desactivado." Foreground="#94A5BD" TextWrapping="Wrap" FontSize="12" />
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
+      </TabViewItem>
       <TabViewItem x:Name="SimulationTab" Header="Simulación" IsClosable="False">
         <Grid Margin="0,12,0,0" RowSpacing="10">
           <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>

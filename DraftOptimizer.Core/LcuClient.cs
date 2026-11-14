@@ -99,6 +99,8 @@ public sealed class LcuClient : IDisposable
     }
     public async Task<HashSet<int>> PickableAsync(CancellationToken ct = default) =>
         (await SendAsync(HttpMethod.Get, "lol-champ-select/v1/pickable-champion-ids", null, ct)).EnumerateArray().Select(x => x.GetInt32()).ToHashSet();
+    public async Task<HashSet<int>> BannableAsync(CancellationToken ct = default) =>
+        (await SendAsync(HttpMethod.Get, "lol-champ-select/v1/bannable-champion-ids", null, ct)).EnumerateArray().Select(x => x.GetInt32()).ToHashSet();
     public async Task PickAsync(int championId, bool complete, CancellationToken ct = default)
     {
         var state = await StateAsync(ct);
@@ -125,6 +127,17 @@ public sealed class LcuClient : IDisposable
         // Re-read after availability: avoid locking a different turn or a manual change.
         if (!Matches((await StateAsync(ct)).Draft) || !stillEnabled()) return false;
         await SendAsync(HttpMethod.Patch, $"lol-champ-select/v1/session/actions/{pick.ActionId}", new { championId = pick.ChampionId, completed = pick.Complete }, ct);
+        return true;
+    }
+    public async Task<bool> AutomaticBanAsync(long gameId, int actionId, int championId, Func<bool> stillEnabled, CancellationToken ct = default)
+    {
+        bool Matches(DraftSession? draft) => draft != null && draft.GameId == gameId && draft.CurrentBan is { ChampionId: 0 } currentBan && currentBan.Id == actionId &&
+            !draft.AllyHasPickIntent(championId) && !draft.Unavailable().Contains(championId);
+        if (!stillEnabled() || !Matches((await StateAsync(ct)).Draft)) return false;
+        if (!(await BannableAsync(ct)).Contains(championId)) return false;
+        // Re-read the ban action and ally intents immediately before committing the ban.
+        if (!stillEnabled() || !Matches((await StateAsync(ct)).Draft)) return false;
+        await SendAsync(HttpMethod.Patch, $"lol-champ-select/v1/session/actions/{actionId}", new { championId, completed = true }, ct);
         return true;
     }
     public async Task ImportRunesAsync(BuildProfile profile, Dataset dataset, CancellationToken ct = default, FinalLoadoutTarget? target = null)
