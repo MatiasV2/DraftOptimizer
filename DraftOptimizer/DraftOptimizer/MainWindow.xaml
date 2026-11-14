@@ -71,7 +71,7 @@
               <ColumnDefinition Width="130" />
               <ColumnDefinition />
             </Grid.ColumnDefinitions>
-            <ComboBox x:Name="RoleBox" Header="Posición" SelectionChanged="FiltersChanged" />
+            <ComboBox x:Name="RoleBox" Header="Línea / modo" SelectionChanged="FiltersChanged" />
             <TextBox x:Name="SearchBox" Grid.Column="1" Header="Campeón" PlaceholderText="Buscar por nombre…" TextChanged="SearchChanged" />
           </Grid>
           <StackPanel Grid.Row="2" Spacing="4">
@@ -83,7 +83,7 @@
               <RowDefinition Height="Auto" />
               <RowDefinition Height="*" />
             </Grid.RowDefinitions>
-            <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition /></Grid.ColumnDefinitions><ToggleSwitch x:Name="PortraitToggle" Header="Retratos" Toggled="PortraitToggled" /><TextBlock Grid.Column="1" VerticalAlignment="Center" Text="★ Favoritos primero · confianza del draft" ToolTipService.ToolTip="Sin picks: confianza del WR y partidas del rol seleccionado. Con picks: límite conservador del draft completo." Foreground="#94A5BD" FontSize="12" TextWrapping="Wrap" /></Grid>
+            <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition /></Grid.ColumnDefinitions><ToggleSwitch x:Name="PortraitToggle" Header="Retratos" IsOn="True" Toggled="PortraitToggled" /><TextBlock Grid.Column="1" VerticalAlignment="Center" Text="★ Favoritos primero · confianza del draft" ToolTipService.ToolTip="Sin picks: confianza del WR y partidas del rol seleccionado. Con picks: límite conservador del draft completo." Foreground="#94A5BD" FontSize="12" TextWrapping="Wrap" /></Grid>
             <GridView x:Name="SuggestionsList" Grid.Row="1" SelectionChanged="SuggestionChanged" SelectionMode="Single" ItemTemplate="{StaticResource ChampionRowTemplate}" ItemsPanel="{StaticResource ChampionRowsPanel}" ItemContainerStyle="{StaticResource ChampionContainerStyle}"><GridView.ItemContainerTransitions><TransitionCollection /></GridView.ItemContainerTransitions></GridView>
           </Grid>
           <Grid Grid.Row="4" ColumnSpacing="8">
@@ -103,6 +103,10 @@
           <TextBlock x:Name="PreviewTitle" Text="Selecciona un campeón" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" />
           <TextBlock x:Name="PreviewState" Text="Al confirmar se aplicará tu perfil o Lolalytics D2+." FontSize="12" TextWrapping="Wrap" />
           <TextBlock x:Name="PreviewSource" FontSize="11" Foreground="#94A5BD" TextWrapping="Wrap" />
+          <TextBlock Text="ELIGE RUNAS Y BUILD" FontSize="13" Foreground="#6CE0C1" FontWeight="SemiBold" />
+          <TextBlock x:Name="BuildOptionsStatus" Text="Selecciona un campeón para comparar opciones." FontSize="12" TextWrapping="Wrap" />
+          <RadioButton x:Name="PopularBuildOption" GroupName="DraftBuildOption" Visibility="Collapsed" Checked="BuildOptionChanged" />
+          <RadioButton x:Name="HighWinrateBuildOption" GroupName="DraftBuildOption" Visibility="Collapsed" Checked="BuildOptionChanged" />
           <TextBlock Text="Runas" FontWeight="SemiBold" /><TextBlock x:Name="PreviewRunes" Text="Sin configuración cargada" FontSize="12" TextWrapping="Wrap" />
           <TextBlock Text="Habilidades y compra" FontWeight="SemiBold" /><TextBlock x:Name="PreviewItems" FontSize="12" TextWrapping="Wrap" />
           <Button Content="Ver en el editor" Click="PreviewEditClick" />

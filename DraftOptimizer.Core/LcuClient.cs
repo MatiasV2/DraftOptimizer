@@ -23,6 +23,7 @@ public sealed record LcuCredentials(int Port, string Password)
 
 public sealed class LcuClient : IDisposable
 {
+    private const int GuardianAngelItemId = 3026;
     private HttpClient? _client;
     public LcuClient() { }
     internal LcuClient(HttpClient client)
@@ -131,8 +132,12 @@ public sealed class LcuClient : IDisposable
     }
     public async Task<bool> AutomaticBanAsync(long gameId, int actionId, int championId, Func<bool> stillEnabled, CancellationToken ct = default)
     {
-        bool Matches(DraftSession? draft) => draft != null && draft.GameId == gameId && draft.CurrentBan is { ChampionId: 0 } currentBan && currentBan.Id == actionId &&
-            !draft.AllyHasPickIntent(championId) && !draft.Unavailable().Contains(championId);
+        bool Matches(DraftSession? draft)
+        {
+            var remaining = draft?.Timer?.RemainingMilliseconds(DateTimeOffset.UtcNow);
+            return draft != null && draft.GameId == gameId && draft.CurrentBan is { ChampionId: 0 } currentBan && currentBan.Id == actionId &&
+                remaining is <= 1000 && !draft.AllyHasPickIntent(championId) && !draft.Unavailable().Contains(championId);
+        }
         if (!stillEnabled() || !Matches((await StateAsync(ct)).Draft)) return false;
         if (!(await BannableAsync(ct)).Contains(championId)) return false;
         // Re-read the ban action and ally intents immediately before committing the ban.
@@ -143,16 +148,34 @@ public sealed class LcuClient : IDisposable
     public async Task ImportRunesAsync(BuildProfile profile, Dataset dataset, CancellationToken ct = default, FinalLoadoutTarget? target = null)
     {
         dataset.Validate(profile);
+        var summonerId = await CurrentSummonerIdAsync(ct);
         await EnsureProfileChampionAsync(profile, ct, target);
         var pages = await SendAsync(HttpMethod.Get, "lol-perks/v1/pages", null, ct);
         var runePageName = profile.IsAram ? "DraftOptimizer ARAM" : "DraftOptimizer";
         var existing = pages.EnumerateArray().FirstOrDefault(x => x.TryGetProperty("name", out var n) && n.GetString() == runePageName && x.TryGetProperty("isEditable", out var edit) && edit.GetBoolean());
         var payload = new { name = runePageName, primaryStyleId = profile.PrimaryStyleId, subStyleId = profile.SubStyleId, selectedPerkIds = profile.Perks, current = true };
         if (target != null) await EnsureProfileChampionAsync(profile, ct, target);
+        await EnsureCurrentSummonerAsync(summonerId, ct);
         if (existing.ValueKind == JsonValueKind.Object)
             await SendAsync(HttpMethod.Put, $"lol-perks/v1/pages/{existing.GetProperty("id").GetInt64()}", payload, ct);
         else
             await SendAsync(HttpMethod.Post, "lol-perks/v1/pages", payload, ct);
+        await EnsureCurrentSummonerAsync(summonerId, ct);
+    }
+    private async Task<long> CurrentSummonerIdAsync(CancellationToken ct)
+    {
+        var summoner = await SendAsync(HttpMethod.Get, "lol-summoner/v1/current-summoner", null, ct);
+        if (!summoner.TryGetProperty("summonerId", out var value))
+            throw new InvalidDataException("League no entregó un ID válido para la cuenta activa. Reconecta el cliente después de cambiar de cuenta.");
+        long id;
+        var valid = value.ValueKind == JsonValueKind.Number ? value.TryGetInt64(out id) : long.TryParse(value.ToString(), out id);
+        if (!valid || id <= 0) throw new InvalidDataException("League no entregó un ID válido para la cuenta activa. Reconecta el cliente después de cambiar de cuenta.");
+        return id;
+    }
+    private async Task EnsureCurrentSummonerAsync(long expectedSummonerId, CancellationToken ct)
+    {
+        if (await CurrentSummonerIdAsync(ct) != expectedSummonerId)
+            throw new InvalidOperationException("La cuenta de League cambió durante el envío. No se confirmó la importación; reconecta y vuelve a intentarlo.");
     }
     private async Task EnsureProfileChampionAsync(BuildProfile profile, CancellationToken ct, FinalLoadoutTarget? target = null)
     {
@@ -171,9 +194,8 @@ public sealed class LcuClient : IDisposable
     {
         dataset.Validate(profile, requireRunes: false);
         await EnsureProfileChampionAsync(profile, ct, target);
-        var summoner = await SendAsync(HttpMethod.Get, "lol-summoner/v1/current-summoner", null, ct);
-        var id = summoner.GetProperty("summonerId").GetInt64();
-        var path = $"lol-item-sets/v1/item-sets/{id}/sets";
+        var summonerId = await CurrentSummonerIdAsync(ct);
+        var path = $"lol-item-sets/v1/item-sets/{summonerId}/sets";
         var document = JsonNode.Parse((await SendAsync(HttpMethod.Get, path, null, ct)).GetRawText())!.AsObject();
         var sets = document["itemSets"]?.AsArray() ?? new JsonArray();
         if (document["itemSets"] == null) document["itemSets"] = sets;
@@ -195,13 +217,21 @@ public sealed class LcuClient : IDisposable
         {
             uid, title, type = "custom", map = "any", mode = "any", associatedMaps = profile.AssociatedMaps,
             associatedChampions = new[] { profile.ChampionId }, preferredItemSlots = Array.Empty<object>(), sortrank = 0,
-            blocks = profile.Blocks.Select(b => new { type = ItemBlockText.CleanTitle(b.Name), hideIfSummonerSpell = b.HideIfSummonerSpell, showIfSummonerSpell = b.ShowIfSummonerSpell, items = b.Items.GroupBy(i => i).Select(g => new { id = g.Key.ToString(), count = g.Count() }) })
+            blocks = profile.Blocks.Select(b => new { type = ItemBlockText.CleanTitle(b.Name), hideIfSummonerSpell = b.HideIfSummonerSpell, showIfSummonerSpell = b.ShowIfSummonerSpell, items = b.Items.GroupBy(i => i).Select(g => new { id = g.Key.ToString(), count = g.Count() + (g.Key == GuardianAngelItemId ? 1 : 0) }) })
         };
         var node = JsonSerializer.SerializeToNode(set, Json.Options);
         var index = sets.Select((x, i) => (x, i)).Where(p => p.x?["uid"]?.GetValue<string>() == uid).Select(p => p.i).DefaultIfEmpty(-1).First();
         if (index >= 0) sets[index] = node; else sets.Add(node);
         if (target != null) await EnsureProfileChampionAsync(profile, ct, target);
+        await EnsureCurrentSummonerAsync(summonerId, ct);
         await SendAsync(HttpMethod.Put, path, document, ct);
+        await EnsureCurrentSummonerAsync(summonerId, ct);
+        var savedDocument = JsonNode.Parse((await SendAsync(HttpMethod.Get, path, null, ct)).GetRawText())!.AsObject();
+        var saved = savedDocument["itemSets"] is JsonArray savedSets && savedSets.Any(item =>
+            item is JsonObject savedSet && savedSet["uid"]?.ToString() == uid && savedSet["associatedChampions"] is JsonArray champions &&
+            champions.Any(champion => int.TryParse(champion?.ToString(), out var associatedId) && associatedId == profile.ChampionId));
+        if (!saved) throw new IOException("League respondió al envío, pero la build no aparece en los conjuntos de la cuenta activa. Comprueba que sigues conectado a la cuenta correcta y vuelve a intentarlo.");
+        await EnsureCurrentSummonerAsync(summonerId, ct);
     }
     private async Task<JsonElement> SendAsync(HttpMethod method, string path, object? body, CancellationToken ct)
     {

@@ -18,6 +18,14 @@ public sealed class LolalyticsProvider(HttpClient http)
         profile.Name = $"{champion.Name} - {role}";
         return profile;
     }
+    public async Task<BuildRecommendationOptions> GetOptionsAsync(Champion champion, Role role, string patch, CancellationToken ct = default)
+    {
+        var html = await http.GetStringAsync(PageUrl(champion, role, patch), ct).ConfigureAwait(false);
+        var options = await Task.Run(() => ParsePageOptions(html, champion.Id, role, patch, expectedTier: DefaultTier), ct).ConfigureAwait(false);
+        options.Popular.Profile.Name = $"{champion.Name} - {role} - más popular";
+        options.HighestWinrate.Profile.Name = $"{champion.Name} - {role} - mejor WR";
+        return options;
+    }
     public static string AramPageUrl(Champion champion, string patch) =>
         $"https://lolalytics.com/lol/{champion.Slug}/aram/build/?tier={AramTier}&region=all&patch={Uri.EscapeDataString(string.Join('.', patch.Split('.').Take(2)))}";
     public async Task<BuildProfile> GetAramAsync(Champion champion, string patch, CancellationToken ct = default)
@@ -31,15 +39,25 @@ public sealed class LolalyticsProvider(HttpClient http)
     {
         var html = await http.GetStringAsync(AramPageUrl(champion, patch), ct).ConfigureAwait(false);
         var visible = System.Net.WebUtility.HtmlDecode(Regex.Replace(html, "<[^>]+>", " "));
-        var match = Regex.Match(visible, @"has a\s+([\d.]+)% win rate[\s\S]{0,500}?([\d,]+)\s+Games", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(3));
-        if (!match.Success || !double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var wr) ||
-            !int.TryParse(match.Groups[2].Value.Replace(",", ""), out var games) || games <= 0)
+        var winrate = Regex.Match(visible, @"has\s+(?:a\s+)?([\d.]+)%\s+win rate\b", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(3));
+        var games = 0;
+        if (winrate.Success)
+        {
+            var afterHeadline = visible[(winrate.Index + winrate.Length)..];
+            var window = afterHeadline[..Math.Min(afterHeadline.Length, 5000)];
+            var gamesMatch = Regex.Match(window, @"([\d,]+)\s+Games?\b", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(3));
+            if (gamesMatch.Success) int.TryParse(gamesMatch.Groups[1].Value.Replace(",", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out games);
+        }
+        if (!winrate.Success || !double.TryParse(winrate.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var wr) || games <= 0)
             throw new InvalidDataException($"Lolalytics no entregó estadísticas ARAM legibles para {champion.Name}.");
         var rate = wr / 100d;
         var interval = WinrateConfidence.Wilson95(rate * games, games);
         return new(champion, rate, games, interval.Lower * 100, 0) { GlobalConfidenceInterval = interval, IsAram = true };
     }
     public static BuildProfile ParsePage(string html, int championId, Role role, string patch, string? expectedTier = null, bool isAram = false)
+        => ParsePageOptions(html, championId, role, patch, expectedTier, isAram).Recommended.Profile;
+
+    public static BuildRecommendationOptions ParsePageOptions(string html, int championId, Role role, string patch, string? expectedTier = null, bool isAram = false)
     {
         var script = Regex.Match(html, "<script\\s+type=[\"']qwik/json[\"'][^>]*>([\\s\\S]*?)</script>", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(3));
         if (!script.Success) throw new InvalidDataException("Lolalytics no entregó datos legibles. Abre la página o usa un perfil personalizado.");
@@ -108,11 +126,37 @@ public sealed class LolalyticsProvider(HttpClient http)
         var details = new JsonObject();
         foreach (var field in new[] { "boots", "item1", "item2", "item3", "item4", "item5", "startSet" })
             if (raw.TryGetProperty(field, out var value) && value.ValueKind == JsonValueKind.String) details[field] = Reference(value, 0);
-        return ParseSummary(summary, championId, role, actualPatch, details, isAram);
+        return ParseBuildOptions(summary, championId, role, actualPatch, details, isAram);
     }
-    public static BuildProfile ParseSummary(JsonNode summary, int championId, Role role, string patch, JsonNode? details = null, bool isAram = false)
+    public static BuildRecommendationOptions ParseBuildOptions(JsonNode summary, int championId, Role role, string patch, JsonNode? details = null, bool isAram = false)
     {
-        var pick = summary["pick"] ?? throw new InvalidDataException("Sin build popular de Lolalytics.");
+        BuildOption ParseOption(string variant, string label)
+        {
+            var data = summary[variant] ?? (variant == "pick" ? summary["pick"] : null)
+                ?? throw new InvalidDataException($"Lolalytics no entregó la opción {label}.");
+            var profile = ParseSummary(summary, championId, role, patch, details, isAram, variant);
+            profile.Name = $"{profile.Name} · {label}";
+            static (double Rate, int Games)? Stats(JsonNode? node)
+            {
+                if (node == null || !double.TryParse(node["wr"]?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var wr) ||
+                    !int.TryParse(node["n"]?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var games) || games <= 0 || wr is < 0 or > 100) return null;
+                return (wr / 100d, games);
+            }
+            var runeStats = Stats(data["runes"]);
+            var coreStats = Stats(data["items"]?["core"]);
+            if (runeStats == null && coreStats == null) throw new InvalidDataException($"Lolalytics no entregó winrate y partidas para {label}.");
+            WinrateInterval? RuneInterval((double Rate, int Games)? stats) => stats is { } value ? WinrateConfidence.Wilson95(value.Rate * value.Games, value.Games) : null;
+            var runeConfidence = RuneInterval(runeStats);
+            var buildConfidence = RuneInterval(coreStats);
+            var score = new[] { runeConfidence?.Lower, buildConfidence?.Lower }.Where(x => x.HasValue).Min()!.Value;
+            return new(profile, runeStats?.Rate, runeStats?.Games, runeConfidence, coreStats?.Rate, coreStats?.Games, buildConfidence, score);
+        }
+        return new(ParseOption("pick", "más popular"), ParseOption("win", "mejor winrate"));
+    }
+
+    public static BuildProfile ParseSummary(JsonNode summary, int championId, Role role, string patch, JsonNode? details = null, bool isAram = false, string variant = "pick")
+    {
+        var pick = summary[variant] ?? throw new InvalidDataException(variant == "pick" ? "Sin build popular de Lolalytics." : "Sin build con mejor winrate de Lolalytics.");
         var runes = pick["runes"]!;
         int[] Values(JsonNode? n) => n?.AsArray().Select(x => x!.GetValue<int>()).ToArray() ?? [];
         var set = runes["set"]!;
@@ -174,6 +218,9 @@ public sealed class LolalyticsProvider(HttpClient http)
                     }
                 }
             }
+            var coreItems = Values(items["core"]?["set"]);
+            if (coreItems.Length > 0)
+                blocks.Add(new() { Name = variant == "pick" ? "Núcleo · más popular" : "Núcleo · mejor winrate", Items = coreItems });
             AddRanked("boots", "Botas", details!["boots"]);
             for (int position = 1; position <= 5; position++)
             {

@@ -48,6 +48,13 @@ public sealed class BuildProfile
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public override string ToString() => Name;
 }
+public sealed record BuildOption(BuildProfile Profile, double? RuneWinrate, int? RuneGames, WinrateInterval? RuneConfidence,
+    double? BuildWinrate, int? BuildGames, WinrateInterval? BuildConfidence, double ConfidenceScore);
+public sealed record BuildRecommendationOptions(BuildOption Popular, BuildOption HighestWinrate)
+{
+    // The conservative lower bound decides the initial choice; ties favor the popular option.
+    public BuildOption Recommended => HighestWinrate.ConfidenceScore > Popular.ConfidenceScore ? HighestWinrate : Popular;
+}
 public sealed class ItemBlock
 {
     public string Name { get; set; } = "Objetos";
