@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -59,12 +60,14 @@ public sealed partial class MainWindow : Window
         PortraitToggle.IsOn = true;
         SetChampionPresentation(SuggestionsList, portraits: true);
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1100, 850));
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "DraftOptimizer.ico"));
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("DraftOptimizer/0.1");
         _timer.Tick += async (_, _) => await PollAsync();
         Closed += (_, _) => { _timer.Stop(); _closed.Cancel(); _draftBuildOptionsCancellation?.Cancel(); _loadout.Dispose(); _lcu.Dispose(); _http.Dispose(); _data?.Dispose(); _context?.Dispose(); };
     }
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
+        BrandLogo.Source = new SvgImageSource { UriSource = new Uri(Path.Combine(AppContext.BaseDirectory, "DraftOptimizerLogo.svg")) };
         ProfileRoleBox.ItemsSource = Enum.GetValues<Role>(); ProfileRoleBox.SelectedItem = Role.Middle;
         RoleBox.ItemsSource = Enum.GetValues<Role>(); RoleBox.SelectedItem = _roleBeforeAram;
         BanRoleBox.ItemsSource = Enum.GetValues<Role>(); BanRoleBox.SelectedItem = Role.Middle;
