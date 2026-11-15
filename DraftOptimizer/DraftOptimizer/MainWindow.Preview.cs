@@ -18,8 +18,9 @@ public sealed partial class MainWindow
         var role = SelectedRole;
         bool Matches(BuildProfile? p) => p?.ChampionId == champion.Id && p.Role == role;
         var recommendation = SelectedDraftBuildOption(champion.Id, role);
+        var selectedBuild = SelectedDraftBuildProfile(champion.Id, role);
         var prepared = _loadout.Prepared;
-        var profile = recommendation?.Profile ?? (Matches(prepared) ? prepared : Matches(_editing) ? _editing : _profiles.Where(p => Matches(p)).OrderByDescending(p => p.UpdatedAt).FirstOrDefault());
+        var profile = selectedBuild ?? recommendation?.Profile ?? (Matches(prepared) ? prepared : Matches(_editing) ? _editing : _profiles.Where(p => Matches(p)).OrderByDescending(p => p.UpdatedAt).FirstOrDefault());
         bool automatic = ReferenceEquals(profile, prepared) && profile != null;
         var state = automatic ? _loadout.Status : profile == null ? "Sin perfil. Al confirmar se cargará Lolalytics D2+ automáticamente." : "Perfil personal disponible. Se aplicará al confirmar este campeón.";
         var key = $"{champion.Id}|{role}|{state}|{profile?.Id}|{profile?.UpdatedAt}|{profile?.GetHashCode()}|{_data.Date}";

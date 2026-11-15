@@ -44,6 +44,7 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<(string Patch, int ChampionId), Suggestion> _aramStats = [];
     private readonly LoadoutCoordinator _loadout = new();
     private (long GameId, int ActionId)? _autoBanAttempted;
+    private (long GameId, int ActionId, int ChampionId)? _lastSelectionHover;
     private ProfileStore Store => new(_directory);
     private Champion? SelectedChampion => ChampionBox.SelectedItem as Champion;
     private Role SelectedRole => _aramRoleMode ? _roleBeforeAram : RoleBox.SelectedItem is Role r ? r : _roleBeforeAram;
@@ -322,7 +323,19 @@ public sealed partial class MainWindow : Window
         _suggestionsCancellation?.Cancel(); ++_suggestionsVersion; _lastSuggestions = null;
         _searchDelay.Stop(); if (!_closed.IsCancellationRequested) _searchDelay.Start();
     }
-    private void SuggestionChanged(object sender, SelectionChangedEventArgs e) { if (SuggestionsList.SelectedItem is ChampionListItem s) ChampionBox.SelectedItem = s.Champion; }
+    private async void SuggestionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (SuggestionsList.SelectedItem is not ChampionListItem suggestion || !suggestion.Available) return;
+        ChampionBox.SelectedItem = suggestion.Champion;
+        var draft = _draft;
+        var action = draft?.CurrentPick;
+        if (_busy || !_lcu.Connected || draft == null || draft.IsAram || action == null || _pickable?.Contains(suggestion.Champion.Id) != true) return;
+        var turn = (draft.GameId, action.Id, suggestion.Champion.Id);
+        if (_lastSelectionHover == turn) return;
+        _lastSelectionHover = turn;
+        _autoDraft.PauseCurrentTurn(draft);
+        await RunAsync(() => _lcu.PickAsync(suggestion.Champion.Id, complete: false, _closed.Token), $"{suggestion.Champion.Name} preseleccionado en League");
+    }
     private void ChampionChanged(object sender, SelectionChangedEventArgs e) { UpdatePickButtons(); UpdateDraftBuildOptionsForSelection(); UpdateLoadoutPreview(); }
     private void PrimaryChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -475,6 +488,7 @@ public sealed partial class MainWindow : Window
         if (!_profilesValid) throw new InvalidOperationException("Corrige o recupera profiles.json antes de guardar. El archivo original se ha conservado.");
         var p = ReadProfile(); var next = _profiles.Where(x => x.Id != p.Id).Append(p).ToList();
         await Store.SaveAsync(next); _profiles = next; ProfilesBox.ItemsSource = _profiles; ProfilesBox.SelectedItem = p; _editing = p;
+        UpdateDraftBuildOptionsForSelection();
     }
     private void ProfileChanged(object sender, SelectionChangedEventArgs e) { if (ProfilesBox.SelectedItem is BuildProfile p && !_initializing) LoadProfile(p); }
     private void NewClick(object sender, RoutedEventArgs e) => NewProfile();
@@ -490,8 +504,7 @@ public sealed partial class MainWindow : Window
     {
         var champion = SelectedChampion; if (champion == null) return;
         _autoDraft.PauseCurrentTurn(_draft);
-        var dialog = new ContentDialog { XamlRoot = Root.XamlRoot, Title = "Confirmar " + champion.Name, Content = "Esta acción confirma tu campeón en la selección de League.", PrimaryButtonText = "Confirmar campeón", CloseButtonText = "Cancelar" };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary) await RunAsync(() => _lcu.PickAsync(champion.Id, true, _closed.Token), "Campeón confirmado");
+        await RunAsync(() => _lcu.PickAsync(champion.Id, true, _closed.Token), "Campeón confirmado");
     }
     private async void LolalyticsClick(object sender, RoutedEventArgs e) => await RunAsync(async () =>
     {
@@ -526,6 +539,7 @@ public sealed partial class MainWindow : Window
             var next = _profiles.Where(x => x.Id != current.Id).ToList();
             await Store.SaveAsync(next);
             _profiles = next;
+            UpdateDraftBuildOptionsForSelection();
             _loadout.Reset();
             ProfilesBox.ItemsSource = _profiles;
             NewProfile();
@@ -561,6 +575,7 @@ public sealed partial class MainWindow : Window
         var next = _profiles.Concat(imported).ToList();
         await Store.SaveAsync(next);
         _profiles = next; ProfilesBox.ItemsSource = _profiles; ProfilesBox.SelectedItem = imported[0];
+        UpdateDraftBuildOptionsForSelection();
     }
     private async void ImportJsonFileClick(object sender, RoutedEventArgs e) => await RunAsync(async () =>
     {
@@ -789,7 +804,7 @@ public sealed partial class MainWindow : Window
             var role = mine != null && Roles.TryParse(mine.AssignedPosition, out var assigned) ? assigned : SelectedRole;
             if (state.Draft?.IsAram != true)
             {
-                profile = SelectedDraftBuildOption(id, role)?.Profile;
+                profile = SelectedDraftBuildProfile(id, role);
                 if (profile == null && _editing?.ChampionId == id && _editing.Role == role && (ProfileChampionBox.SelectedItem as Champion)?.Id == id && ProfileRoleBox.SelectedItem is Role profileRole && profileRole == role) profile = ReadProfile();
                 profile ??= _profiles.Where(p => p.ChampionId == id && p.Role == role && !p.IsAram).OrderByDescending(p => p.UpdatedAt).FirstOrDefault();
             }
