@@ -1,6 +1,10 @@
 namespace DraftOptimizer.Core;
 
-public sealed record DraftComputationResult(List<Suggestion> Suggestions, DraftComposition? Composition, DraftAnalysisResult? Analysis);
+public sealed record DraftComputationResult(List<Suggestion> Suggestions, DraftComposition? Composition, DraftAnalysisResult? Analysis)
+{
+    public IReadOnlyDictionary<int, GlobalConfidencePlacement> GlobalConfidence { get; init; } =
+        new Dictionary<int, GlobalConfidencePlacement>();
+}
 
 public static class DraftComputation
 {
@@ -12,13 +16,15 @@ public static class DraftComputation
         using var contextLease = context?.Retain();
         return await Task.Run(() =>
         {
+            var globalConfidence = calculateSuggestions ? data.GlobalConfidenceByRole(role, ct) : null;
             List<Suggestion> suggestions = calculateSuggestions ? data.Suggest(role, snapshot, context, pickable, includeLocalSelection, ct) : [];
             ct.ThrowIfCancellationRequested();
             var composition = summary && snapshot != null ? DraftRoleInference.Infer(data, context, snapshot) : null;
             var analysis = composition != null && context != null && snapshot!.HasCompositionPicks
                 ? new DraftAnalyzer(data, context).Analyze(composition.Allies, composition.Enemies) : null;
             ct.ThrowIfCancellationRequested();
-            return new DraftComputationResult(suggestions, composition, analysis);
+            var result = new DraftComputationResult(suggestions, composition, analysis);
+            return globalConfidence == null ? result : result with { GlobalConfidence = globalConfidence };
         }, ct).ConfigureAwait(false);
     }
 }

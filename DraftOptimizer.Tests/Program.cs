@@ -55,6 +55,11 @@ string Encode(JsonNode? node)
     return Base36(id);
 }
 summary["pick"]!["runes"]!["page"]!["pri"] = 1; summary["pick"]!["runes"]!["page"]!["sec"] = 2;
+summary["pick"]!["runes"]!["wr"] = 51.5;
+summary["pick"]!["runes"]!["n"] = 1200;
+summary["win"] = summary["pick"]!.DeepClone();
+summary["win"]!["runes"]!["wr"] = 54.0;
+summary["win"]!["runes"]!["n"] = 400;
 Encode(new JsonObject { ["analysed"] = 10000, ["enemy"] = new JsonObject(), ["summary"] = summary.DeepClone(), ["header"] = new JsonObject { ["cid"] = 103, ["lane"] = "middle", ["patch"] = "16.22" } });
 var fixture = "<script type=\"qwik/json\">" + new JsonObject { ["objs"] = qwikObjects }.ToJsonString() + "</script>";
 var decoded = LolalyticsProvider.ParsePage(fixture, 103, Role.Middle, "16.22.1");

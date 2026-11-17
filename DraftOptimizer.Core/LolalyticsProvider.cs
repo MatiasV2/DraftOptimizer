@@ -235,11 +235,21 @@ public sealed class LolalyticsProvider(HttpClient http)
             blocks.Add(new() { Name = "Núcleo popular · sin datos para confianza", Items = Values(items["core"]?["set"]) });
             foreach (var key in new[] { "item4", "item5", "item6" }) AddRanked(key, $"Alternativas · {key}", items[key]);
         }
+        int spell1Id = 0, spell2Id = 0;
+        if (pick["sums"] is JsonObject summoners && summoners["ids"] is JsonArray { Count: 2 } spells &&
+            spells[0] is JsonValue first && first.TryGetValue<int>(out var firstId) &&
+            spells[1] is JsonValue second && second.TryGetValue<int>(out var secondId) &&
+            firstId != secondId && Dataset.SupportsSummonerSpell(firstId, isAram) && Dataset.SupportsSummonerSpell(secondId, isAram))
+        {
+            spell1Id = firstId;
+            spell2Id = secondId;
+        }
         return new BuildProfile
         {
             Name = isAram ? "Lolalytics · ARAM" : $"Lolalytics · {role}", ChampionId = championId, Role = role, IsAram = isAram,
             PrimaryStyleId = StyleId(runes["page"]!["pri"]!), SubStyleId = StyleId(runes["page"]!["sec"]!),
             Perks = Values(set["pri"]).Concat(Values(set["sec"])).Concat(Values(set["mod"])).ToArray(),
+            Spell1Id = spell1Id, Spell2Id = spell2Id,
             EarlySkills = early, SkillPriority = priority, ItemEvidence = evidence,
             Blocks = blocks.Where(b => b.Items.Length > 0).ToList(), AssociatedMaps = isAram ? [12] : [11],
             Source = hasPositions ? (isAram ? "Lolalytics · ARAM · Emerald+ · Global · Wilson 95% · ≥200 partidas" : "Lolalytics · D2+ · Global · Solo/Duo · Wilson 95% · ≥200 partidas · mínimo 3 alternativas por posición y hasta 2 inicios") : "Lolalytics · núcleo popular · sin muestras por posición", Patch = patch

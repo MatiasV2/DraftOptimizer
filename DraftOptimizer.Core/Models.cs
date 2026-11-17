@@ -38,6 +38,8 @@ public sealed class BuildProfile
     public int PrimaryStyleId { get; set; } = 8100;
     public int SubStyleId { get; set; } = 8200;
     public int[] Perks { get; set; } = [];
+    public int Spell1Id { get; set; }
+    public int Spell2Id { get; set; }
     public List<ItemBlock> Blocks { get; set; } = [];
     public string[] EarlySkills { get; set; } = [];
     public string[] SkillPriority { get; set; } = [];

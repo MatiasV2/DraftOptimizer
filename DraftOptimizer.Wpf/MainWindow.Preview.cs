@@ -1,5 +1,5 @@
 using DraftOptimizer.Core;
-using Microsoft.UI.Xaml;
+using System.Windows;
 using System;
 using System.Linq;
 using System.Text;
@@ -23,12 +23,14 @@ public sealed partial class MainWindow
         var profile = selectedBuild ?? recommendation?.Profile ?? (Matches(prepared) ? prepared : Matches(_editing) ? _editing : _profiles.Where(p => Matches(p)).OrderByDescending(p => p.UpdatedAt).FirstOrDefault());
         bool automatic = ReferenceEquals(profile, prepared) && profile != null;
         var state = automatic ? _loadout.Status : profile == null ? "Sin perfil. Al confirmar se cargará Lolalytics D2+ automáticamente." : "Perfil personal disponible. Se aplicará al confirmar este campeón.";
-        var key = $"{champion.Id}|{role}|{state}|{profile?.Id}|{profile?.UpdatedAt}|{profile?.GetHashCode()}|{_data.Date}";
+        var key = $"{champion.Id}|{role}|{state}|{profile?.Id}|{profile?.UpdatedAt}|{profile?.Spell1Id}|{profile?.Spell2Id}|{profile?.GetHashCode()}|{_data.Date}";
         if (_previewKey == key) return;
         _previewKey = key; _previewProfile = profile;
         PreviewTitle.Text = champion.Name + " - " + role;
         PreviewState.Text = state;
         PreviewSource.Text = profile == null ? "D2+ · región Global · posición seleccionada" : profile.Source + " · " + profile.Patch + (recommendation == null ? "" : $" · Runas: {recommendation.RuneWinrate:P1} ({recommendation.RuneGames:N0} games) · Build: {recommendation.BuildWinrate:P1} ({recommendation.BuildGames:N0} games) · límite IC95% ≥ {recommendation.ConfidenceScore:P1}");
+        PreviewSpells.Text = profile == null ? "Pendientes de carga" : profile.Spell1Id == 0 ? "Se mantienen los hechizos del cliente" :
+            $"D · {_data.SummonerSpellName(profile.Spell1Id)}   F · {_data.SummonerSpellName(profile.Spell2Id)}";
         if (profile == null) { PreviewRunes.Text = "Pendientes de carga"; PreviewItems.Text = "La configuración aparecerá aquí al estar preparada."; return; }
         string Name(string table, int id) => _data.DisplayName(table, id);
         PreviewRunes.Text = profile.Perks.Length == 0 ? "Este perfil contiene solo objetos. Sus runas se completarán desde D2+ al confirmar." : string.Join("\n", profile.Perks.Select((id, i) => Name(i >= 6 ? "statShardData" : "runeData", id)));

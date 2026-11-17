@@ -1,6 +1,7 @@
+using System.Windows.Threading;
 using DraftOptimizer.Core;
-using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
+using System.Windows;
+using System.Windows.Controls;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -28,14 +29,14 @@ public sealed partial class MainWindow
     }
     private void MainTabChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (!_simulationReady || sender is not TabView tabs) return;
+        if (!_simulationReady || sender is not TabControl tabs || !ReferenceEquals(e.Source, tabs)) return;
         bool active = ReferenceEquals(tabs.SelectedItem, SimulationTab);
         if (active == _simulationActive) return;
         _simulationActive = active;
-        if (active) DispatcherQueue.TryEnqueue(RefreshSimulation);
+        if (active) Dispatcher.InvokeAsync(RefreshSimulation);
         else { _simulationSearchDelay.Stop(); _simulationCancellation?.Cancel(); ++_simulationVersion; }
     }
-    private void SetChampionPresentation(GridView view, bool portraits)
+    private void SetChampionPresentation(ListBox view, bool portraits)
     {
         var template = (DataTemplate)Root.Resources[portraits ? "ChampionPortraitTemplate" : "ChampionRowTemplate"];
         var panel = (ItemsPanelTemplate)Root.Resources[portraits ? "ChampionPortraitsPanel" : "ChampionRowsPanel"];
@@ -48,11 +49,11 @@ public sealed partial class MainWindow
     }
     private void PortraitToggled(object sender, RoutedEventArgs e)
     {
-        if (SuggestionsList != null && PortraitToggle != null) SetChampionPresentation(SuggestionsList, PortraitToggle.IsOn);
+        if (SuggestionsList != null && PortraitToggle != null) SetChampionPresentation(SuggestionsList, PortraitToggle.IsChecked == true);
     }
     private void SimulationPortraitToggled(object sender, RoutedEventArgs e)
     {
-        if (SimulationCandidates != null && SimulationPortraitToggle != null) SetChampionPresentation(SimulationCandidates, SimulationPortraitToggle.IsOn);
+        if (SimulationCandidates != null && SimulationPortraitToggle != null) SetChampionPresentation(SimulationCandidates, SimulationPortraitToggle.IsChecked == true);
     }
     private void SimulationRoleChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -117,7 +118,10 @@ public sealed partial class MainWindow
                 foreach (var champion in _data.Champions.Where(c => !used.Contains(c.Id) && c.Name.Contains(search, StringComparison.OrdinalIgnoreCase)))
                 {
                     if (!_simulationRowCache.TryGetValue(champion.Id, out var row)) _simulationRowCache[champion.Id] = row = new(champion);
-                    row.SetPortraitPatch(_data.Patch); row.Update(champion, role, false, true, recommendations.GetValueOrDefault(champion.Id), false); rows.Add(row);
+                    row.SetPortraitPatch(_data.Patch);
+                    row.SetGlobalConfidence(work.GlobalConfidence.TryGetValue(champion.Id, out var placement) ? placement : null);
+                    row.Update(champion, role, false, true, recommendations.GetValueOrDefault(champion.Id), false);
+                    rows.Add(row);
                 }
             }
             SimulationPickButton.IsEnabled = data != null && !_simulation.Complete;

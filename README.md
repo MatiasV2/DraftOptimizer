@@ -1,19 +1,19 @@
 # DraftOptimizer
 
-Aplicación de escritorio Windows en C# / WinUI 3, basada funcionalmente en [DraftGap](https://github.com/vigovlugt/draftgap), con perfiles de runas y ruta de objetos. Esta es una implementación inicial utilizable, con integración LCU implementada y pruebas simuladas; la selección e importaciones deben verificarse también con un cliente real abierto.
+Aplicación de escritorio Windows en C# y WPF, basada funcionalmente en [DraftGap](https://github.com/vigovlugt/draftgap), con perfiles de runas y ruta de objetos. Esta es una implementación inicial utilizable, con integración LCU implementada y pruebas simuladas; la selección e importaciones deben verificarse también con un cliente real abierto.
 
 ## Abrir y ejecutar
 
-Abre `DraftOptimizer.slnx` en Visual Studio con las herramientas de desarrollo para WinUI y selecciona el proyecto **DraftOptimizer**, plataforma **x64**. El proyecto de aplicación se ejecuta sin empaquetado MSIX (`WindowsPackageType=None`). La solución conserva el proyecto de paquete original como referencia; no se validó su creación de MSIX en esta entrega.
-
-También puedes ejecutar `./run.ps1` en PowerShell desde esta carpeta, o:
+Abre `DraftOptimizer.slnx` en Visual Studio con la carga de trabajo **Desarrollo de escritorio de .NET**. Selecciona **DraftOptimizer.Wpf** como proyecto de inicio. También puedes ejecutar estos comandos desde la carpeta de la solución.
 
 ```powershell
-dotnet build ./DraftOptimizer/DraftOptimizer/DraftOptimizer.csproj -p:Platform=x64 -p:RuntimeIdentifier=win-x64
-./DraftOptimizer/DraftOptimizer/bin/x64/Debug/net8.0-windows10.0.19041.0/win-x64/DraftOptimizer.exe
+.\run.ps1
+dotnet build .\DraftOptimizer.slnx -c Release
+dotnet run --project .\DraftOptimizer.Tests
+dotnet publish .\DraftOptimizer.Wpf -c Release -r win-x64 --self-contained false
 ```
 
-Requiere Windows 10 19041 o posterior, SDK .NET compatible con .NET 8, runtime .NET 8 y Windows App Runtime correspondiente a la dependencia Windows App SDK 2.6.5 del proyecto original. La compilación restaura paquetes desde NuGet. Se probó con SDK .NET 10.0.403. No necesitas una API key de Riot para LCU.
+La aplicación requiere Windows, el SDK de .NET 10 para compilar y **.NET Desktop Runtime 10** para ejecutar una publicación dependiente del runtime. Las pruebas ejecutan el núcleo en .NET 8. El publicador genera una aplicación de escritorio con `DraftOptimizer.exe` y su carpeta `Data`. LCU no requiere una clave de API de Riot.
 
 ## Uso
 
@@ -25,7 +25,9 @@ Requiere Windows 10 19041 o posterior, SDK .NET compatible con .NET 8, runtime .
 6. **Guardar perfil** persiste la configuración por campeón y posición. **Importar build .json** abre un archivo exportado de conjuntos de objetos de League, como `PantheonSR.json`: acepta una lista de builds, un conjunto individual o un contenedor `itemSets`. Conserva título, campeón, mapas, bloques, orden, cantidades y condiciones de hechizos de los bloques. Si contiene varias builds se guardan todas en **Mis perfiles**. Para varios campeones asociados se crea un perfil por campeón; si no indica campeón usa el seleccionado en pantalla. Como el archivo no incluye posición, utiliza la posición elegida al importar. **JSON ↔** permite pegar esos mismos formatos o copiar/pegar perfiles nativos como nuevos, incluso si el editor todavía está incompleto. Los perfiles guardados pueden seleccionarse y eliminarse desde la interfaz.
 
    Los conjuntos de objetos importados no contienen runas: se guardan y pueden enviarse a League directamente. Para **Aplicar runas a League**, configura primero las nueve selecciones del editor. Importar el archivo no cambia automáticamente el cliente. Los objetos se validan contra el catálogo del parche; ante un objeto retirado se muestra un error y no se guarda parcialmente la importación. Límite de archivo: 4 MB; hasta 100 builds por archivo, 99 unidades por entrada de objeto y 500 unidades por bloque.
-7. **Aplicar runas y objetos al confirmar campeón** está activada inicialmente y se conserva en favorites.json. La app prepara y aplica la configuración tras confirmar tu campeón, sin esperar a los demás picks. Cada escritura revalida partida, campeón y posición. Puedes desactivar la opción para usar los botones manuales. **Aplicar runas a League** crea o actualiza exclusivamente una página editable llamada `DraftOptimizer`; nunca borra otras páginas. **Enviar objetos a League** conserva los demás conjuntos y recomienda compras dentro del juego; no compra objetos automáticamente.
+7. **Aplicar hechizos, runas y objetos al confirmar campeón** está activada inicialmente y se conserva en favorites.json. La app prepara y aplica la configuración tras confirmar tu campeón, sin esperar a los demás picks. Cada escritura revalida partida, campeón y posición. Puedes desactivar la opción para usar los botones manuales. **Aplicar runas a League** crea o actualiza exclusivamente una página editable llamada `DraftOptimizer`; nunca borra otras páginas. **Enviar objetos a League** conserva los demás conjuntos y recomienda compras dentro del juego; no compra objetos automáticamente.
+
+En **Runas y objetos** puedes elegir un hechizo distinto para cada tecla, **D** y **F**. Se guardan con el perfil. **Aplicar hechizos a League** los envía manualmente durante la selección de campeones. Las recomendaciones de Lolalytics incluyen los hechizos cuando la fuente entrega una pareja válida. Si ambos campos quedan en **Sin configurar**, se conserva la selección del cliente.
 
    Se prioriza el perfil cargado y válido del campeón/posición; si no lo hay, se busca el perfil guardado coincidente más reciente. Sin perfil se descarga automáticamente Lolalytics D2+. Si el perfil contiene solo objetos, se conservan sus compras y se completan las runas con D2+. La descarga se precarga sin bloquear el sondeo del cliente. El ejemplo de perfil nuevo no se considera una configuración guardada ni impide el fallback.
 
@@ -121,7 +123,7 @@ La pestaña «Simulación» funciona sin League abierto. El orden es azul, rojo,
 
 ### Corrección de estabilidad y rendimiento de retratos
 
-Campeones y Simulación usan un único control virtualizado por pestaña. Los modos comparten una caché de imágenes limitada a 256 URLs con decodificación de 72px. El simulador solo calcula mientras está activo y agrupa la búsqueda durante 180ms. Sus controles y plantillas se declaran en XAML, sin obtener plantillas de controles de otra pestaña. Las transiciones de reordenación se desactivan para evitar animaciones masivas. Las excepciones de interfaz se registran en `%LOCALAPPDATA%/DraftOptimizer/logs/ui-errors.log`.
+Campeones y Simulación usan una lista por pestaña, con virtualización en modo fila y distribución en mosaico en modo retrato. Los modos comparten una caché de imágenes limitada a 256 URLs con decodificación de 72px. El simulador solo calcula mientras está activo y agrupa la búsqueda durante 180ms. Sus controles y plantillas se declaran en XAML, sin obtener plantillas de controles de otra pestaña. Las excepciones de interfaz se registran en `%LOCALAPPDATA%/DraftOptimizer/logs/ui-errors.log`.
 
 ### Automatización y calidad de la build
 
@@ -137,4 +139,4 @@ Campeones y Simulación usan un único control virtualizado por pestaña. Los mo
 
 El catálogo/contexto se descargan y leen por stream UTF-8; su parseo, el análisis del draft y el parseo de Lolalytics se realizan fuera del hilo UI. Los cálculos usan una copia de la composición, cancelación y comprobación de versión antes de publicar. Los datasets permanecen retenidos hasta que termina el último lector. El estado del controlador automático y las escrituras a Riot siguen seriales y revalidadas.
 
-Los retratos usan archivos PNG en `%LOCALAPPDATA%/DraftOptimizer/cache/portraits`, con descargas compartidas por URL y un máximo de cuatro en paralelo. WinUI publica las fuentes desde su cola UI con prioridad baja. La caché virtualizada de celdas se limita a una pantalla y no se vuelve a enlazar un retrato cuando los datos del campeón no cambiaron. La búsqueda principal agrupa cambios durante 160 ms.
+Los retratos usan archivos PNG en `%LOCALAPPDATA%/DraftOptimizer/cache/portraits`, con descargas compartidas por URL y un máximo de cuatro en paralelo. WPF actualiza las imágenes en el dispatcher con prioridad de fondo. Las filas conservan sus enlaces de imagen al actualizar las estadísticas. La búsqueda principal agrupa cambios durante 160 ms.

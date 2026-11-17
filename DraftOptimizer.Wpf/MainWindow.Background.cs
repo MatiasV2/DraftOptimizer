@@ -1,5 +1,6 @@
+using System.Windows.Threading;
 using DraftOptimizer.Core;
-using Microsoft.UI.Xaml;
+using System.Windows;
 using System;
 using System.Threading;
 
@@ -24,7 +25,6 @@ public sealed partial class MainWindow
         Closed += (_, _) =>
         {
             _searchDelay.Stop(); _suggestionsCancellation?.Cancel(); _simulationCancellation?.Cancel();
-            ((PortraitImageConverter)Root.Resources["PortraitImageConverter"]).Dispose();
         };
     }
 }

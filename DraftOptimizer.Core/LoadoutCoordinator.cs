@@ -11,7 +11,7 @@ public sealed class LoadoutCoordinator : IDisposable
     private BuildProfile? _ready;
     private bool _failed;
     private string? _inputFingerprint;
-    private static string Fingerprint(BuildProfile profile) => Json.Write(new { profile.Id, profile.Name, profile.ChampionId, profile.Role, profile.IsAram, profile.PrimaryStyleId, profile.SubStyleId, profile.Perks, profile.Blocks, profile.AssociatedMaps });
+    private static string Fingerprint(BuildProfile profile) => Json.Write(new { profile.Id, profile.Name, profile.ChampionId, profile.Role, profile.IsAram, profile.PrimaryStyleId, profile.SubStyleId, profile.Perks, profile.Spell1Id, profile.Spell2Id, profile.Blocks, profile.AssociatedMaps });
     public Task Pending => _application ?? _preparation ?? Task.CompletedTask;
     public string Status { get; private set; } = "Runas y objetos automáticos: esperando tu campeón confirmado.";
     public BuildProfile? Prepared => _ready;
@@ -87,9 +87,9 @@ public sealed class LoadoutCoordinator : IDisposable
     {
         try
         {
-            Status = "Aplicando runas y objetos al campeón confirmado…";
+            Status = profile.Spell1Id == 0 ? "Aplicando runas y objetos al campeón confirmado…" : "Aplicando hechizos, runas y objetos al campeón confirmado…";
             await apply(profile, target, ct);
-            if (_key == key && !ct.IsCancellationRequested) Status = $"Runas y objetos aplicados a League: {profile.Name}.";
+            if (_key == key && !ct.IsCancellationRequested) Status = $"{(profile.Spell1Id == 0 ? "Runas y objetos" : "Hechizos, runas y objetos")} aplicados a League: {profile.Name}.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex) { if (_key == key) { _failed = true; Status = "No se completó la aplicación automática: " + ex.Message + " Usa Reintentar configuración."; } }

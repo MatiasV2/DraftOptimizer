@@ -154,7 +154,7 @@ public sealed class LcuClient : IDisposable
         var runePageName = profile.IsAram ? "DraftOptimizer ARAM" : "DraftOptimizer";
         var existing = pages.EnumerateArray().FirstOrDefault(x => x.TryGetProperty("name", out var n) && n.GetString() == runePageName && x.TryGetProperty("isEditable", out var edit) && edit.GetBoolean());
         var payload = new { name = runePageName, primaryStyleId = profile.PrimaryStyleId, subStyleId = profile.SubStyleId, selectedPerkIds = profile.Perks, current = true };
-        if (target != null) await EnsureProfileChampionAsync(profile, ct, target);
+        await EnsureProfileChampionAsync(profile, ct, target);
         await EnsureCurrentSummonerAsync(summonerId, ct);
         if (existing.ValueKind == JsonValueKind.Object)
             await SendAsync(HttpMethod.Put, $"lol-perks/v1/pages/{existing.GetProperty("id").GetInt64()}", payload, ct);
@@ -177,19 +177,35 @@ public sealed class LcuClient : IDisposable
         if (await CurrentSummonerIdAsync(ct) != expectedSummonerId)
             throw new InvalidOperationException("La cuenta de League cambió durante el envío. No se confirmó la importación; reconecta y vuelve a intentarlo.");
     }
-    private async Task EnsureProfileChampionAsync(BuildProfile profile, CancellationToken ct, FinalLoadoutTarget? target = null)
+    private async Task<DraftSession> EnsureProfileChampionAsync(BuildProfile profile, CancellationToken ct, FinalLoadoutTarget? target = null)
     {
         var state = await StateAsync(ct);
-        if (state.Phase is not ("None" or "Lobby" or "Matchmaking" or "ReadyCheck" or "ChampSelect"))
-            throw new InvalidOperationException("Importa la configuración antes de empezar la partida.");
-        var mine = state.Draft?.MyTeam.FirstOrDefault(p => p.CellId == state.Draft.LocalPlayerCellId);
-        if (target != null && (state.Phase != "ChampSelect" || state.Draft == null || state.Draft.GameId != target.GameId || (target.RequireFinalization && !state.Draft.IsFinalization) ||
-            state.Draft.LocalLockedChampion != target.ChampionId || profile.ChampionId != target.ChampionId ||
+        if (state.Phase != "ChampSelect" || state.Draft is not { } draft)
+            throw new InvalidOperationException("Solo puedes importar configuraciones durante la selección de campeones.");
+        var mine = draft.MyTeam.FirstOrDefault(p => p.CellId == draft.LocalPlayerCellId);
+        if (target != null && (draft.GameId != target.GameId || (target.RequireFinalization && !draft.IsFinalization) ||
+            draft.LocalLockedChampion != target.ChampionId || profile.ChampionId != target.ChampionId ||
             (mine != null && Roles.TryParse(mine.AssignedPosition, out var role) && role != target.Role)))
             throw new InvalidOperationException("La partida, el campeón o el estado del draft cambió; se canceló la importación automática.");
         if (mine != null && mine.VisibleChampion > 0 && mine.VisibleChampion != profile.ChampionId)
             throw new InvalidOperationException("El perfil no corresponde al campeón seleccionado en League.");
+        return draft;
     }
+
+    public async Task ImportSummonerSpellsAsync(BuildProfile profile, Dataset dataset, CancellationToken ct = default, FinalLoadoutTarget? target = null)
+    {
+        dataset.ValidateSummonerSpells(profile);
+        if (profile.Spell1Id == 0) throw new InvalidDataException("Configura los hechizos de invocador D y F en el perfil.");
+        var summonerId = await CurrentSummonerIdAsync(ct);
+        await EnsureCurrentSummonerAsync(summonerId, ct);
+        var draft = await EnsureProfileChampionAsync(profile, ct, target);
+        if (draft.LocalVisibleChampion != profile.ChampionId || draft.IsAram != profile.IsAram)
+            throw new InvalidOperationException("El perfil de hechizos no corresponde al campeón o modo seleccionado en League.");
+
+        await SendAsync(HttpMethod.Patch, "lol-champ-select/v1/session/my-selection",
+            new { spell1Id = profile.Spell1Id, spell2Id = profile.Spell2Id }, ct);
+    }
+
     public async Task ImportItemsAsync(BuildProfile profile, Dataset dataset, CancellationToken ct = default, FinalLoadoutTarget? target = null, IReadOnlySet<Guid>? retainedProfileIds = null)
     {
         dataset.Validate(profile, requireRunes: false);
@@ -222,7 +238,7 @@ public sealed class LcuClient : IDisposable
         var node = JsonSerializer.SerializeToNode(set, Json.Options);
         var index = sets.Select((x, i) => (x, i)).Where(p => p.x?["uid"]?.GetValue<string>() == uid).Select(p => p.i).DefaultIfEmpty(-1).First();
         if (index >= 0) sets[index] = node; else sets.Add(node);
-        if (target != null) await EnsureProfileChampionAsync(profile, ct, target);
+        await EnsureProfileChampionAsync(profile, ct, target);
         await EnsureCurrentSummonerAsync(summonerId, ct);
         await SendAsync(HttpMethod.Put, path, document, ct);
         await EnsureCurrentSummonerAsync(summonerId, ct);

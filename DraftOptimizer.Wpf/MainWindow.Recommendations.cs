@@ -1,7 +1,6 @@
 using DraftOptimizer.Core;
-using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
+using System.Windows;
+using System.Windows.Controls;
 using System;
 using System.Linq;
 using System.Threading;
@@ -136,17 +135,16 @@ public sealed partial class MainWindow
 
     private UIElement OptionContent(string title, BuildProfile profile)
     {
-        var content = new StackPanel { Spacing = 4, MaxWidth = 250 };
-        content.Children.Add(new TextBlock { Text = title, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
-        var icons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        var content = new StackPanel { MaxWidth = 250 };
+        content.Children.Add(new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+        var icons = new StackPanel { Orientation = Orientation.Horizontal };
         if (_data != null)
         {
             var choices = _data.Choices("runeData").Concat(_data.Choices("statShardData")).ToDictionary(choice => choice.Id);
-            var converter = (PortraitImageConverter)Root.Resources["PortraitImageConverter"];
             foreach (var id in profile.Perks)
             {
                 if (!choices.TryGetValue(id, out var rune)) continue;
-                var image = new Image { Width = 23, Height = 23, Source = rune.IconUrl is { } url ? converter.Convert(url, typeof(ImageSource), null!, "") as ImageSource : null };
+                var image = new PortraitImage { Width = 23, Height = 23, Url = rune.IconUrl };
                 ToolTipService.SetToolTip(image, rune.Name);
                 icons.Children.Add(image);
             }

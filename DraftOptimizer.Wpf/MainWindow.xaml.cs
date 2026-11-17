@@ -1,10 +1,11 @@
+using System.Globalization;
+using System.Windows.Threading;
 using DraftOptimizer.Core;
-using Microsoft.UI.Xaml.Automation;
-using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Controls.Primitives;
-using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Imaging;
+using System.Windows.Automation;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -12,6 +13,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -20,6 +22,21 @@ namespace DraftOptimizer;
 public sealed partial class MainWindow : Window
 {
     private readonly string _directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DraftOptimizer");
+    private string _profileDirectory;
+    private readonly FirebaseCloudSync _firebase = new();
+    private readonly SemaphoreSlim _cloudSyncGate = new(1, 1);
+    private readonly DispatcherTimer _cloudPollTimer = new() { Interval = TimeSpan.FromSeconds(30) };
+    private CancellationTokenSource? _cloudSyncDelay;
+    private CancellationTokenSource? _profileEditDelay;
+    private Task? _cloudSyncTask;
+    private Task? _profileAutosaveTask;
+    private bool _loadingProfile;
+    private bool _updatingProfiles;
+    private bool _cloudLocalDirty;
+    private string? _cloudUpdateTime;
+    private HashSet<Guid> _deletedProfileIds = [];
+    private long _loadoutSuppressedGameId;
+    private readonly HashSet<(int ChampionId, Role Role)> _loadoutSuppressedForGame = [];
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(60) };
     private readonly LcuClient _lcu = new();
     private readonly CancellationTokenSource _closed = new();
@@ -27,7 +44,7 @@ public sealed partial class MainWindow : Window
     private Dataset? _data, _context;
     private DraftSession? _draft;
     private HashSet<int>? _pickable;
-    private List<BuildProfile> _profiles = [];
+    private ObservableCollection<BuildProfile> _profiles = [];
     private BuildProfile? _editing;
     private bool _initializing = true, _polling, _busy, _loadingData, _profilesValid = true;
     private int _followedChampion;
@@ -46,7 +63,7 @@ public sealed partial class MainWindow : Window
     private readonly LoadoutCoordinator _loadout = new();
     private (long GameId, int ActionId)? _autoBanAttempted;
     private (long GameId, int ActionId, int ChampionId)? _lastSelectionHover;
-    private ProfileStore Store => new(_directory);
+    private ProfileStore Store => new(_profileDirectory);
     private Champion? SelectedChampion => ChampionBox.SelectedItem as Champion;
     private Role SelectedRole => _aramRoleMode ? _roleBeforeAram : RoleBox.SelectedItem is Role r ? r : _roleBeforeAram;
     private Role SelectedBanRole => BanRoleBox.SelectedItem is Role role ? role : SelectedRole;
@@ -54,38 +71,390 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        _profileDirectory = _directory;
+        ProfilesBox.ItemsSource = _profiles;
         InitializeSimulation();
         InitializeBackgroundWork();
         SuggestionsList.ItemsSource = _championRows;
-        PortraitToggle.IsOn = true;
         SetChampionPresentation(SuggestionsList, portraits: true);
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(1100, 850));
-        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "DraftOptimizer.ico"));
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("DraftOptimizer/0.1");
         _timer.Tick += async (_, _) => await PollAsync();
-        Closed += (_, _) => { _timer.Stop(); _closed.Cancel(); _draftBuildOptionsCancellation?.Cancel(); _loadout.Dispose(); _lcu.Dispose(); _http.Dispose(); _data?.Dispose(); _context?.Dispose(); };
+        _cloudPollTimer.Tick += async (_, _) => await PollCloudAsync();
+        Closed += (_, _) => { _timer.Stop(); _cloudPollTimer.Stop(); _cloudSyncDelay?.Cancel(); _profileEditDelay?.Cancel(); _closed.Cancel(); _draftBuildOptionsCancellation?.Cancel(); _loadout.Dispose(); _lcu.Dispose(); _http.Dispose(); _firebase.Dispose(); _cloudSyncGate.Dispose(); _data?.Dispose(); _context?.Dispose(); };
     }
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        BrandLogo.Source = new SvgImageSource { UriSource = new Uri(Path.Combine(AppContext.BaseDirectory, "DraftOptimizerLogo.svg")) };
+        Root.Loaded -= OnLoaded;
         ProfileRoleBox.ItemsSource = Enum.GetValues<Role>(); ProfileRoleBox.SelectedItem = Role.Middle;
         RoleBox.ItemsSource = Enum.GetValues<Role>(); RoleBox.SelectedItem = _roleBeforeAram;
         BanRoleBox.ItemsSource = Enum.GetValues<Role>(); BanRoleBox.SelectedItem = Role.Middle;
         Directory.CreateDirectory(_directory);
         var settings = Path.Combine(_directory, "lockfile-path.txt");
         if (File.Exists(settings)) _lcu.LockfilePath = await File.ReadAllTextAsync(settings);
-        try { _profiles = await Store.LoadAsync(); }
-        catch (Exception ex) { _profilesValid = false; Show("No se pudieron leer tus perfiles", ex.Message, InfoBarSeverity.Error); }
-        ProfilesBox.ItemsSource = _profiles;
-        try { _favorites = await new FavoriteSettingsStore(_directory).LoadAsync(); }
-        catch (Exception ex) { _favoritesValid = false; _favorites = new() { AutoHoverEnabled = false }; Show("No se pudieron leer los favoritos", ex.Message, InfoBarSeverity.Error); }
+        await LoadProfileDataAsync(_directory);
         UpdateAutomationControls();
         _initializing = false;
+        await RestoreFirebaseSessionAsync();
         await LoadDataAsync();
-        _timer.Start(); await PollAsync();
+        if (!_closed.IsCancellationRequested) { _timer.Start(); await PollAsync(); }
     }
     private void Show(string title, string message, InfoBarSeverity severity = InfoBarSeverity.Informational)
-    { Notice.Title = title; Notice.Message = message; Notice.Severity = severity; Notice.IsOpen = true; }
+    {
+        NoticeTitle.Text = title;
+        NoticeMessage.Text = message;
+        NoticeTitle.Foreground = severity switch
+        {
+            InfoBarSeverity.Warning => Brushes.Gold,
+            InfoBarSeverity.Error => Brushes.LightSalmon,
+            InfoBarSeverity.Success => Brushes.Aquamarine,
+            _ => Brushes.White
+        };
+        Notice.Visibility = Visibility.Visible;
+    }
+
+    private enum InfoBarSeverity { Informational, Warning, Error, Success }
+
+    private void DismissNotice(object sender, RoutedEventArgs e) => Notice.Visibility = Visibility.Collapsed;
+
+    private async Task LoadProfileDataAsync(string directory)
+    {
+        _profileDirectory = directory;
+        _deletedProfileIds = [];
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var deletedPath = Path.Combine(directory, "deleted-profile-ids.json");
+            _deletedProfileIds = File.Exists(deletedPath) ? Json.Read<HashSet<Guid>>(await File.ReadAllTextAsync(deletedPath)) : [];
+            var profiles = await Store.LoadAsync();
+            var filtered = profiles.Where(profile => !_deletedProfileIds.Contains(profile.Id)).ToList();
+            if (filtered.Count != profiles.Count) await Store.SaveAsync(filtered);
+            ReplaceProfiles(filtered); _profilesValid = true;
+        }
+        catch (Exception ex) { ReplaceProfiles([]); _profilesValid = false; Show("No se pudieron leer tus perfiles", ex.Message, InfoBarSeverity.Error); }
+        try { _favorites = await new FavoriteSettingsStore(directory).LoadAsync(); _favoritesValid = true; }
+        catch (Exception ex) { _favoritesValid = false; _favorites = new() { AutoHoverEnabled = false }; Show("No se pudieron leer los favoritos", ex.Message, InfoBarSeverity.Error); }
+        _editing = null;
+        UpdateAutomationControls();
+    }
+
+    private static string UserDirectory(string uid)
+    {
+        if (string.IsNullOrWhiteSpace(uid) || uid.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '-' or '_')))
+            throw new InvalidDataException("Firebase devolvió un UID no válido.");
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DraftOptimizer", "profiles-by-user", uid);
+    }
+
+    private async Task SaveDeletedProfileIdsAsync(HashSet<Guid>? deletedIds = null)
+    {
+        Directory.CreateDirectory(_profileDirectory);
+        var path = Path.Combine(_profileDirectory, "deleted-profile-ids.json");
+        var temporary = path + ".tmp";
+        await File.WriteAllTextAsync(temporary, Json.Write(deletedIds ?? _deletedProfileIds));
+        File.Move(temporary, path, true);
+    }
+
+    private async Task RestoreFirebaseSessionAsync()
+    {
+        try
+        {
+            if (await _firebase.RestoreSessionAsync(_closed.Token)) await ActivateFirebaseUserAsync();
+            else SetFirebaseUi();
+        }
+        catch (Exception ex) { SetFirebaseUi(); CloudSyncStatus.Text = "Sesión sin conexión · " + ex.Message; }
+    }
+
+    private async Task ActivateFirebaseUserAsync()
+    {
+        var uid = _firebase.UserId ?? throw new InvalidOperationException("No hay una cuenta autenticada.");
+        _profileEditDelay?.Cancel();
+        ProfilesBox.SelectedItem = null; ProfileChampionBox.SelectedItem = null; _editing = null;
+        await LoadProfileDataAsync(UserDirectory(uid));
+        var cloud = await _firebase.LoadAsync(_closed.Token);
+        if (cloud?.Payload is not { } payload)
+        {
+            _cloudLocalDirty = true;
+            if (!await SyncCloudAsync(_closed.Token)) throw new IOException("No se pudo crear el documento de sincronización de esta cuenta.");
+        }
+        else
+        {
+            var snapshot = Json.Read<CloudProfileSnapshot>(payload);
+            await ApplyCloudSnapshotAsync(snapshot, persistLocally: true);
+            _cloudUpdateTime = cloud.UpdateTime;
+            _cloudLocalDirty = false;
+        }
+        if (_data != null && _profiles.Count == 0) NewProfile();
+        else if (_data != null && ProfilesBox.SelectedItem is null) ProfilesBox.SelectedItem = _profiles.OrderByDescending(p => p.UpdatedAt).First();
+        SetFirebaseUi();
+        _cloudPollTimer.Start();
+    }
+
+    private async Task ApplyCloudSnapshotAsync(CloudProfileSnapshot snapshot, bool persistLocally)
+    {
+        if (snapshot.Profiles == null || snapshot.Favorites == null) throw new InvalidDataException("El documento sincronizado no contiene perfiles válidos.");
+        _deletedProfileIds.UnionWith(snapshot.DeletedProfileIds ?? []);
+        var activeProfiles = snapshot.Profiles.Where(profile => !_deletedProfileIds.Contains(profile.Id)).ToList();
+        var favorites = snapshot.Favorites;
+        if (favorites.Favorites == null || favorites.BanPriorities == null || favorites.Favorites.Any(p => !Enum.IsDefined(p.Key) || p.Value == null || p.Value.Any(id => id <= 0)) ||
+            favorites.BanPriorities.Any(p => !Enum.IsDefined(p.Key) || p.Value == null || p.Value.Any(id => id <= 0) || p.Value.Distinct().Count() != p.Value.Count))
+            throw new InvalidDataException("Los favoritos sincronizados no son válidos.");
+        favorites.AutoLockSeconds = Math.Clamp(favorites.AutoLockSeconds, 1, 30);
+        if (snapshot.Profiles.Any(p => p == null || p.Id == Guid.Empty || !Enum.IsDefined(p.Role) || p.ChampionId <= 0))
+            throw new InvalidDataException("Uno de los perfiles de runas/objetos sincronizados no es válido.");
+        if (persistLocally)
+        {
+            await Store.SaveAsync(activeProfiles);
+            await new FavoriteSettingsStore(_profileDirectory).SaveAsync(favorites);
+            await SaveDeletedProfileIdsAsync();
+        }
+        ReplaceProfiles(activeProfiles);
+        _favorites = favorites;
+        _profilesValid = _favoritesValid = true;
+        _editing = null;
+        UpdateAutomationControls();
+        if (_data != null && _profiles.Count > 0) ProfilesBox.SelectedItem = _profiles.OrderByDescending(p => p.UpdatedAt).First();
+        _lastSuggestions = null; RefreshSuggestions();
+    }
+
+    private void SetFirebaseUi()
+    {
+        var signedIn = _firebase.IsSignedIn;
+        FirebaseEmailBox.IsEnabled = !signedIn;
+        FirebasePasswordBox.IsEnabled = !signedIn;
+        FirebaseSignInButton.Visibility = signedIn ? Visibility.Collapsed : Visibility.Visible;
+        FirebaseRegisterButton.Visibility = signedIn ? Visibility.Collapsed : Visibility.Visible;
+        FirebaseSignOutButton.Visibility = signedIn ? Visibility.Visible : Visibility.Collapsed;
+        FirebaseImportLocalButton.Visibility = signedIn ? Visibility.Visible : Visibility.Collapsed;
+        if (signedIn) FirebaseEmailBox.Text = _firebase.Email ?? FirebaseEmailBox.Text;
+        CloudSyncStatus.Text = signedIn
+            ? $"Sincronización activa · {_firebase.Email ?? _firebase.UserId} · se sincroniza tras cada cambio."
+            : "Sin sesión · los cambios se guardan en este equipo.";
+    }
+
+    private void ReplaceProfiles(IEnumerable<BuildProfile> profiles)
+    {
+        _updatingProfiles = true;
+        try
+        {
+            ProfilesBox.SelectedItem = null;
+            _profiles.Clear();
+            foreach (var profile in profiles) _profiles.Add(profile);
+        }
+        finally { _updatingProfiles = false; }
+    }
+
+    private async Task SignInFirebaseAsync(bool createAccount)
+    {
+        var email = FirebaseEmailBox.Text.Trim();
+        var password = FirebasePasswordBox.Password;
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrEmpty(password)) throw new InvalidOperationException("Escribe tu correo y contraseña.");
+        var hadPendingEdit = _profileEditDelay is { IsCancellationRequested: false };
+        _profileEditDelay?.Cancel();
+        if (hadPendingEdit && ProfileChampionBox.SelectedItem is Champion) await SaveAsync();
+        FirebaseSignInButton.IsEnabled = FirebaseRegisterButton.IsEnabled = false;
+        CloudSyncStatus.Text = "Conectando con Firebase…";
+        try
+        {
+            if (createAccount) await _firebase.RegisterAsync(email, password, _closed.Token);
+            else await _firebase.SignInAsync(email, password, _closed.Token);
+            FirebasePasswordBox.Password = "";
+            await ActivateFirebaseUserAsync();
+        }
+        finally { FirebaseSignInButton.IsEnabled = FirebaseRegisterButton.IsEnabled = true; }
+    }
+
+    private async void FirebaseSignInClick(object sender, RoutedEventArgs e)
+    {
+        if (_busy) return;
+        try { await SignInFirebaseAsync(createAccount: false); }
+        catch (Exception ex) { CloudSyncStatus.Text = "No se pudo iniciar sesión · " + ex.Message; Show("Firebase", ex.Message, InfoBarSeverity.Error); }
+    }
+
+    private async void FirebaseRegisterClick(object sender, RoutedEventArgs e)
+    {
+        if (_busy) return;
+        try { await SignInFirebaseAsync(createAccount: true); }
+        catch (Exception ex) { CloudSyncStatus.Text = "No se pudo crear la cuenta · " + ex.Message; Show("Firebase", ex.Message, InfoBarSeverity.Error); }
+    }
+
+    private async void FirebaseSignOutClick(object sender, RoutedEventArgs e)
+    {
+        if (_busy) return;
+        var hadPendingEdit = _profileEditDelay is { IsCancellationRequested: false };
+        _profileEditDelay?.Cancel();
+        if (hadPendingEdit && ProfileChampionBox.SelectedItem is Champion)
+            try { await SaveAsync(); } catch { }
+        _cloudPollTimer.Stop(); _cloudSyncDelay?.Cancel();
+        await SyncCloudAsync();
+        _firebase.SignOut(); _cloudUpdateTime = null;
+        await LoadProfileDataAsync(_directory);
+        if (_data != null && _profiles.Count > 0) ProfilesBox.SelectedItem = _profiles.OrderByDescending(p => p.UpdatedAt).First();
+        else if (_data != null) NewProfile();
+        SetFirebaseUi();
+    }
+
+    private async void FirebaseImportLocalClick(object sender, RoutedEventArgs e)
+    {
+        if (_busy || !_firebase.IsSignedIn) return;
+        if (!ShowPrompt("Importar configuración local", "Se copiarán los favoritos, ajustes y perfiles de este equipo a la cuenta de Firebase actual. Si ya hay datos en la nube, se reemplazarán.", "Importar y sincronizar", "Cancelar")) return;
+        try
+        {
+            var legacy = _directory;
+            ReplaceProfiles(await new ProfileStore(legacy).LoadAsync());
+            _deletedProfileIds.Clear();
+            _favorites = await new FavoriteSettingsStore(legacy).LoadAsync();
+            _profilesValid = _favoritesValid = true;
+            await Store.SaveAsync(_profiles);
+            await SaveDeletedProfileIdsAsync();
+            await new FavoriteSettingsStore(_profileDirectory).SaveAsync(_favorites);
+            UpdateAutomationControls();
+            await SyncCloudAsync();
+        }
+        catch (Exception ex) { Show("No se pudo importar la configuración local", ex.Message, InfoBarSeverity.Error); }
+    }
+
+    private void QueueCloudSync()
+    {
+        if (!_firebase.IsSignedIn || _closed.IsCancellationRequested) return;
+        _cloudSyncDelay?.Cancel(); _cloudSyncDelay?.Dispose();
+        var delay = CancellationTokenSource.CreateLinkedTokenSource(_closed.Token);
+        _cloudSyncDelay = delay;
+        _cloudLocalDirty = true;
+        _cloudSyncTask = DebouncedCloudSyncAsync(delay);
+    }
+
+    private async Task CancelProfileAutosaveAsync()
+    {
+        var pending = _profileAutosaveTask;
+        _profileEditDelay?.Cancel();
+        if (pending != null) try { await pending; } catch { }
+        _profileAutosaveTask = null;
+    }
+
+    private async Task WaitForQueuedCloudSyncAsync()
+    {
+        var pending = _cloudSyncTask;
+        if (pending != null) try { await pending; } catch { }
+        _cloudSyncTask = null;
+    }
+
+    private async Task DebouncedCloudSyncAsync(CancellationTokenSource delay)
+    {
+        try { await Task.Delay(500, delay.Token); await SyncCloudAsync(delay.Token); }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            if (ReferenceEquals(_cloudSyncDelay, delay)) { _cloudSyncDelay = null; delay.Dispose(); }
+        }
+    }
+
+    private async Task<bool> SyncCloudAsync(CancellationToken ct = default)
+    {
+        if (!_firebase.IsSignedIn) return true;
+        await _cloudSyncGate.WaitAsync(ct);
+        try
+        {
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var remote = await _firebase.LoadAsync(ct);
+                var deletedProfileIds = new HashSet<Guid>(_deletedProfileIds);
+                if (remote?.Payload is { } remotePayload)
+                {
+                    var remoteSnapshot = Json.Read<CloudProfileSnapshot>(remotePayload);
+                    deletedProfileIds.UnionWith(remoteSnapshot.DeletedProfileIds ?? []);
+                }
+                var activeProfiles = _profiles.Where(profile => !deletedProfileIds.Contains(profile.Id)).ToList();
+                var payload = Json.Write(new CloudProfileSnapshot
+                {
+                    Profiles = activeProfiles, Favorites = _favorites, DeletedProfileIds = deletedProfileIds
+                });
+                try
+                {
+                    _cloudUpdateTime = await _firebase.SaveAsync(payload, ct, remote?.UpdateTime, expectAbsent: remote == null);
+                    _deletedProfileIds = deletedProfileIds;
+                    if (activeProfiles.Count != _profiles.Count)
+                    {
+                        foreach (var profile in _profiles.Where(profile => _deletedProfileIds.Contains(profile.Id)).ToList()) _profiles.Remove(profile);
+                        if (_editing != null && _deletedProfileIds.Contains(_editing.Id)) _editing = null;
+                        await Store.SaveAsync(activeProfiles);
+                    }
+                    await SaveDeletedProfileIdsAsync();
+                    _cloudLocalDirty = false;
+                    SetFirebaseUi();
+                    ProfileSaveStatus.Text = "Perfil y ajustes sincronizados con Firebase.";
+                    return true;
+                }
+                catch (FirebaseCloudSync.CloudConflictException) when (attempt < 2) { }
+            }
+            throw new FirebaseCloudSync.CloudConflictException();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return false; }
+        catch (Exception ex)
+        {
+            CloudSyncStatus.Text = "Cambios guardados localmente · error al sincronizar: " + ex.Message;
+            return false;
+        }
+        finally { _cloudSyncGate.Release(); }
+    }
+
+    private async Task<(List<BuildProfile> Profiles, FavoriteSettings Favorites, HashSet<Guid> DeletedIds, string? UpdateTime)?> DeleteProfileFromCloudFirstAsync(Guid profileId)
+    {
+        await _cloudSyncGate.WaitAsync(_closed.Token);
+        try
+        {
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var remote = await _firebase.LoadAsync(_closed.Token);
+                var remoteSnapshot = remote?.Payload is { } remotePayload ? Json.Read<CloudProfileSnapshot>(remotePayload) : null;
+                if (remoteSnapshot?.Profiles?.Any(profile => profile.Id == profileId) != true)
+                    return null;
+
+                var deletedIds = new HashSet<Guid>(_deletedProfileIds);
+                deletedIds.UnionWith(remoteSnapshot?.DeletedProfileIds ?? []);
+                deletedIds.Add(profileId);
+
+                var profilesById = new Dictionary<Guid, BuildProfile>();
+                foreach (var profile in remoteSnapshot?.Profiles ?? [])
+                    if (!deletedIds.Contains(profile.Id)) profilesById[profile.Id] = profile;
+                foreach (var profile in _profiles)
+                {
+                    if (deletedIds.Contains(profile.Id)) continue;
+                    if (!profilesById.TryGetValue(profile.Id, out var remoteProfile) || profile.UpdatedAt > remoteProfile.UpdatedAt)
+                        profilesById[profile.Id] = profile;
+                }
+                var profiles = profilesById.Values.OrderBy(profile => profile.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                var favorites = _cloudLocalDirty ? _favorites : remoteSnapshot?.Favorites ?? _favorites;
+                var payload = Json.Write(new CloudProfileSnapshot { Profiles = profiles, Favorites = favorites, DeletedProfileIds = deletedIds });
+                try
+                {
+                    var updateTime = await _firebase.SaveAsync(payload, _closed.Token, remote!.UpdateTime);
+                    return (profiles, favorites, deletedIds, updateTime);
+                }
+                catch (FirebaseCloudSync.CloudConflictException) when (attempt < 2) { }
+            }
+            throw new FirebaseCloudSync.CloudConflictException();
+        }
+        finally { _cloudSyncGate.Release(); }
+    }
+
+    private async Task PollCloudAsync()
+    {
+        if (_busy || !_firebase.IsSignedIn || _cloudSyncDelay is { IsCancellationRequested: false } ||
+            _profileEditDelay is { IsCancellationRequested: false }) return;
+        try
+        {
+            if (_cloudLocalDirty) { await SyncCloudAsync(_closed.Token); return; }
+            if (ReferenceEquals(MainTabs.SelectedItem, LoadoutTab)) return;
+            var remote = await _firebase.LoadAsync(_closed.Token);
+            if (remote?.Payload is not { } payload || remote.UpdateTime == _cloudUpdateTime) return;
+            var snapshot = Json.Read<CloudProfileSnapshot>(payload);
+            await ApplyCloudSnapshotAsync(snapshot, persistLocally: true);
+            _cloudUpdateTime = remote.UpdateTime;
+            _cloudLocalDirty = false;
+            CloudSyncStatus.Text = $"Sincronizado · {_firebase.Email ?? _firebase.UserId} · cambios recibidos de otro dispositivo.";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { CloudSyncStatus.Text = "Sesión activa · no se pudo revisar la nube: " + ex.Message; }
+    }
     private async Task RunAsync(Func<Task> action, string success, bool showSuccess = true)
     {
         if (_busy) return;
@@ -110,12 +479,12 @@ public sealed partial class MainWindow : Window
             _initializing = true;
             ChampionBox.ItemsSource = data.Champions; ProfileChampionBox.ItemsSource = data.Champions;
             BanChampionBox.ItemsSource = data.Champions; RefreshBanPriorities();
-            ((ProfileChampionConverter)Root.Resources["ProfileChampionConverter"]).Catalogue = data;
-            ProfilesBox.ItemsSource = null; ProfilesBox.ItemsSource = _profiles;
             PrimaryBox.ItemsSource = data.Choices("runePathData"); SecondaryBox.ItemsSource = data.Choices("runePathData");
             F0.ItemsSource = data.Shards(0); F1.ItemsSource = data.Shards(1); F2.ItemsSource = data.Shards(2);
             _initializing = false;
-            if (current != null) LoadProfile(current); else NewProfile();
+            if (current != null) LoadProfile(current);
+            else if (_profiles.Count > 0) ProfilesBox.SelectedItem = _profiles.OrderByDescending(p => p.UpdatedAt).First();
+            else NewProfile();
             UpdateDraftBuildOptionsForSelection();
             UpdateFavoritesText();
             old?.Dispose(); RefreshSimulation();
@@ -129,7 +498,7 @@ public sealed partial class MainWindow : Window
                 _context?.Dispose(); _context = context;
                 DataText.Text += $" · contexto 30 días {context.Date}{(contextCached ? " (caché)" : "")}";
                 RefreshSuggestions(); RefreshSimulation();
-                if (_profilesValid && _favoritesValid) Notice.IsOpen = false;
+                if (_profilesValid && _favoritesValid) Notice.Visibility = Visibility.Collapsed;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             { Show("Catálogo disponible sin contexto", "El orden usa solo estadísticas base. " + ex.Message, InfoBarSeverity.Warning); }
@@ -241,11 +610,15 @@ public sealed partial class MainWindow : Window
                 SetDraftSummary("Las recomendaciones se ordenan con datos de ARAM de Lolalytics (Emerald+), usando confianza Wilson al 95%.");
                 if (!statErrors.IsEmpty && candidates.All(c => !_aramStats.ContainsKey((data.Patch, c.Id))))
                     Show("Estadísticas ARAM no disponibles", statErrors.TryPeek(out var message) ? message : "No se recibieron datos de winrate.", InfoBarSeverity.Warning);
+                var aramConfidence = GlobalConfidencePlacement.RankSuggestions(candidates
+                    .Select(champion => _aramStats.GetValueOrDefault((data.Patch, champion.Id)))
+                    .OfType<Suggestion>());
                 var rowsAram = candidates.Where(c => c.Name.Contains(search, StringComparison.OrdinalIgnoreCase) || c.Key.Contains(search, StringComparison.OrdinalIgnoreCase))
                     .Select(c =>
                     {
                         if (!_rowsById.TryGetValue(c.Id, out var row)) _rowsById[c.Id] = row = new ChampionListItem(c);
                         row.SetPortraitPatch(data.Patch);
+                        row.SetGlobalConfidence(aramConfidence.TryGetValue(c.Id, out var placement) ? placement : null);
                         row.Update(c, role, favorites.Contains(c.Id), true, _aramStats.GetValueOrDefault((data.Patch, c.Id)), favoritesValid);
                         return row;
                     })
@@ -264,6 +637,7 @@ public sealed partial class MainWindow : Window
                 {
                     if (!_rowsById.TryGetValue(c.Id, out var row)) _rowsById[c.Id] = row = new ChampionListItem(c);
                     row.SetPortraitPatch(data.Patch);
+                    row.SetGlobalConfidence(work.GlobalConfidence.TryGetValue(c.Id, out var placement) ? placement : null);
                     row.Update(c, role, favorites.Contains(c.Id), !unavailable.Contains(c.Id) && (pickable == null || pickable.Contains(c.Id)), recommendations.GetValueOrDefault(c.Id), favoritesValid);
                     return row;
                 })
@@ -346,6 +720,7 @@ public sealed partial class MainWindow : Window
         var boxes = new[] { P0, P1, P2, P3 };
         for (int i = 0; i < 4; i++) { boxes[i].ItemsSource = _data.Runes(c.Id, i); boxes[i].SelectedIndex = 0; }
         RenderPrimaryRuneGrid();
+        ScheduleProfileAutosave();
     }
     private void SecondaryChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -354,6 +729,7 @@ public sealed partial class MainWindow : Window
         S0.ItemsSource = choices; S1.ItemsSource = choices;
         S0.SelectedIndex = 0; S1.SelectedIndex = choices.Count > 3 ? 3 : 0;
         RenderSecondaryRuneGrid();
+        ScheduleProfileAutosave();
     }
     private ToggleButton RuneIconButton(Choice rune, bool selected, bool enabled, Action<ToggleButton> click)
     {
@@ -361,8 +737,7 @@ public sealed partial class MainWindow : Window
         AutomationProperties.SetName(button, rune.Name);
         if (rune.IconUrl is { } url)
         {
-            var converter = (PortraitImageConverter)Root.Resources["PortraitImageConverter"];
-            button.Content = new Image { Width = 36, Height = 36, Source = converter.Convert(url, typeof(ImageSource), null!, "") as ImageSource };
+            button.Content = new PortraitImage { Width = 36, Height = 36, Url = url };
         }
         else button.Content = new TextBlock { Text = rune.Name, TextWrapping = TextWrapping.Wrap, FontSize = 9, TextAlignment = TextAlignment.Center };
         ToolTipService.SetToolTip(button, rune.Name);
@@ -377,7 +752,7 @@ public sealed partial class MainWindow : Window
         for (int rowIndex = 0; rowIndex < boxes.Length; rowIndex++)
         {
             int index = rowIndex;
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+            var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             row.Children.Add(new TextBlock { Text = $"Fila {rowIndex + 1}", Width = 48, VerticalAlignment = VerticalAlignment.Center, FontSize = 11, TextWrapping = TextWrapping.Wrap });
             foreach (var rune in boxes[rowIndex].Items.OfType<Choice>())
                 row.Children.Add(RuneIconButton(rune, (boxes[rowIndex].SelectedItem as Choice)?.Id == rune.Id, true, _ =>
@@ -396,7 +771,7 @@ public sealed partial class MainWindow : Window
         for (int slot = 1; slot <= 3; slot++)
         {
             int rowSlot = slot;
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+            var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             row.Children.Add(new TextBlock { Text = $"Fila {slot + 1}", Width = 48, VerticalAlignment = VerticalAlignment.Center, FontSize = 11, TextWrapping = TextWrapping.Wrap });
             var current = selected.FirstOrDefault(x => x != null && _data.RuneSlot(x.Id) == rowSlot);
             bool enabled = current != null || selected.Any(x => x == null);
@@ -423,28 +798,39 @@ public sealed partial class MainWindow : Window
     private void NewProfile()
     {
         if (_data == null) return;
-        _editing = null; ProfilesBox.SelectedItem = null;
-        ProfileName.Text = "Mi configuración"; SourceText.Text = "Personalizada";
-
-        Select(PrimaryBox, 8100); Select(SecondaryBox, 8200);
-        PrimaryChanged(PrimaryBox, null!); SecondaryChanged(SecondaryBox, null!);
-        Select(S0, 8226); Select(S1, 8210); Select(F0, 5008); Select(F1, 5008); Select(F2, 5001);
-        RenderPrimaryRuneGrid(); RenderSecondaryRuneGrid();
-        ItemsText.Text = "Inicio: 1056, 2003, 2003\nNúcleo: 6655, 3020, 3089";
-        if (SelectedChampion == null) ChampionBox.SelectedItem = _data.Champions.FirstOrDefault(c => c.Key == "Ahri") ?? _data.Champions[0];
-        ProfileChampionBox.SelectedItem = SelectedChampion ?? _data.Champions.First(); ProfileRoleBox.SelectedItem = SelectedRole;
+        _loadingProfile = true;
+        try
+        {
+            _editing = null; ProfilesBox.SelectedItem = null;
+            LoadSpellChoices();
+            ProfileName.Text = "Mi configuración"; SourceText.Text = "Personalizada";
+            Select(PrimaryBox, 8100); Select(SecondaryBox, 8200);
+            PrimaryChanged(PrimaryBox, null!); SecondaryChanged(SecondaryBox, null!);
+            Select(S0, 8226); Select(S1, 8210); Select(F0, 5008); Select(F1, 5008); Select(F2, 5001);
+            RenderPrimaryRuneGrid(); RenderSecondaryRuneGrid();
+            ItemsText.Text = "Inicio: 1056, 2003, 2003\nNúcleo: 6655, 3020, 3089";
+            if (SelectedChampion == null) ChampionBox.SelectedItem = _data.Champions.FirstOrDefault(c => c.Key == "Ahri") ?? _data.Champions[0];
+            ProfileChampionBox.SelectedItem = SelectedChampion ?? _data.Champions.First(); ProfileRoleBox.SelectedItem = SelectedRole;
+        }
+        finally { _loadingProfile = false; }
     }
     private void LoadProfile(BuildProfile p)
     {
-        _editing = p;
-        ProfileChampionBox.SelectedItem = _data?.Champions.FirstOrDefault(c => c.Id == p.ChampionId); ProfileRoleBox.SelectedItem = p.Role;
-        ProfileName.Text = p.Name; SourceText.Text = p.Source + " · " + p.Patch + " · " + p.UpdatedAt.ToLocalTime().ToString("g") + (p.Perks.Length == 0 ? " · Sin runas; puedes enviar los objetos directamente a League." : "");
-        ChampionBox.SelectedItem = _data?.Champions.FirstOrDefault(c => c.Id == p.ChampionId); RoleBox.SelectedItem = p.Role;
-        Select(PrimaryBox, p.PrimaryStyleId); Select(SecondaryBox, p.SubStyleId); PrimaryChanged(PrimaryBox, null!); SecondaryChanged(SecondaryBox, null!);
-        var boxes = new[] { P0, P1, P2, P3, S0, S1, F0, F1, F2 };
-        for (int i = 0; i < boxes.Length; i++) { if (p.Perks.Length > i) Select(boxes[i], p.Perks[i]); else boxes[i].SelectedItem = null; }
-        RenderPrimaryRuneGrid(); RenderSecondaryRuneGrid();
-        ItemsText.Text = ItemBlockText.Format(p.Blocks); UpdateLoadoutPreview();
+        _loadingProfile = true;
+        try
+        {
+            _editing = p;
+            LoadSpellChoices(p);
+            ProfileChampionBox.SelectedItem = _data?.Champions.FirstOrDefault(c => c.Id == p.ChampionId); ProfileRoleBox.SelectedItem = p.Role;
+            ProfileName.Text = p.Name; SourceText.Text = p.Source + " · " + p.Patch + " · " + p.UpdatedAt.ToLocalTime().ToString("g") + (p.Perks.Length == 0 ? " · Sin runas; puedes enviar los objetos directamente a League." : "");
+            ChampionBox.SelectedItem = _data?.Champions.FirstOrDefault(c => c.Id == p.ChampionId); RoleBox.SelectedItem = p.Role;
+            Select(PrimaryBox, p.PrimaryStyleId); Select(SecondaryBox, p.SubStyleId); PrimaryChanged(PrimaryBox, null!); SecondaryChanged(SecondaryBox, null!);
+            var boxes = new[] { P0, P1, P2, P3, S0, S1, F0, F1, F2 };
+            for (int i = 0; i < boxes.Length; i++) { if (p.Perks.Length > i) Select(boxes[i], p.Perks[i]); else boxes[i].SelectedItem = null; }
+            RenderPrimaryRuneGrid(); RenderSecondaryRuneGrid();
+            ItemsText.Text = ItemBlockText.Format(p.Blocks); UpdateLoadoutPreview();
+        }
+        finally { _loadingProfile = false; }
     }
     private async Task ApplySpanishNamesAsync(Dataset data)
     {
@@ -474,7 +860,8 @@ public sealed partial class MainWindow : Window
             Id = _editing?.Id ?? Guid.NewGuid(), Name = ProfileName.Text.Trim(), ChampionId = ((Champion)ProfileChampionBox.SelectedItem).Id, Role = ProfileRoleBox.SelectedItem is Role profileRole ? profileRole : SelectedRole,
             PrimaryStyleId = (PrimaryBox.SelectedItem as Choice)?.Id ?? 0, SubStyleId = (SecondaryBox.SelectedItem as Choice)?.Id ?? 0,
             Perks = new[] { P0, P1, P2, P3, S0, S1, F0, F1, F2 }.Select(b => (b.SelectedItem as Choice)?.Id ?? 0).ToArray(), Source = "Personalizada", Patch = _data.Patch,
-            AssociatedMaps = _editing?.AssociatedMaps.ToArray() ?? [11],
+            AssociatedMaps = _editing?.AssociatedMaps.ToArray() ?? [11], IsAram = _editing?.IsAram ?? false,
+            Spell1Id = (Spell1Box.SelectedItem as Choice)?.Id ?? 0, Spell2Id = (Spell2Box.SelectedItem as Choice)?.Id ?? 0,
             EarlySkills = _editing?.ChampionId == ((Champion)ProfileChampionBox.SelectedItem).Id && _editing.Role == (ProfileRoleBox.SelectedItem is Role metadataRole ? metadataRole : SelectedRole) ? _editing.EarlySkills.ToArray() : [],
             SkillPriority = _editing?.ChampionId == ((Champion)ProfileChampionBox.SelectedItem).Id && _editing.Role == (ProfileRoleBox.SelectedItem is Role priorityRole ? priorityRole : SelectedRole) ? _editing.SkillPriority.ToArray() : [],
             ItemEvidence = _editing?.ChampionId == ((Champion)ProfileChampionBox.SelectedItem).Id && _editing.Role == (ProfileRoleBox.SelectedItem is Role evidenceRole ? evidenceRole : SelectedRole) ? _editing.ItemEvidence.ToList() : []
@@ -482,7 +869,7 @@ public sealed partial class MainWindow : Window
         if (profile.Perks.All(id => id == 0)) profile.Perks = [];
         profile.Blocks = ItemBlockText.Parse(ItemsText.Text, _editing?.Blocks);
         _data.Validate(profile, requireRunes: false);
-        if (_editing != null && profile.ChampionId == _editing.ChampionId && profile.Role == _editing.Role && profile.PrimaryStyleId == _editing.PrimaryStyleId && profile.SubStyleId == _editing.SubStyleId && profile.Perks.SequenceEqual(_editing.Perks) && Json.Write(profile.Blocks) == Json.Write(_editing.Blocks)) { profile.Source = _editing.Source; profile.Patch = _editing.Patch; }
+        if (_editing != null && profile.ChampionId == _editing.ChampionId && profile.Role == _editing.Role && profile.PrimaryStyleId == _editing.PrimaryStyleId && profile.SubStyleId == _editing.SubStyleId && profile.Spell1Id == _editing.Spell1Id && profile.Spell2Id == _editing.Spell2Id && profile.Perks.SequenceEqual(_editing.Perks) && Json.Write(profile.Blocks) == Json.Write(_editing.Blocks)) { profile.Source = _editing.Source; profile.Patch = _editing.Patch; }
         return profile;
     }
     private HashSet<Guid> RetainedProfileIds(BuildProfile profile) => _profiles.Where(p => p.ChampionId == profile.ChampionId && p.Role == profile.Role).Select(p => p.Id).Append(profile.Id).ToHashSet();
@@ -490,10 +877,63 @@ public sealed partial class MainWindow : Window
     {
         if (!_profilesValid) throw new InvalidOperationException("Corrige o recupera profiles.json antes de guardar. El archivo original se ha conservado.");
         var p = ReadProfile(); var next = _profiles.Where(x => x.Id != p.Id).Append(p).ToList();
-        await Store.SaveAsync(next); _profiles = next; ProfilesBox.ItemsSource = _profiles; ProfilesBox.SelectedItem = p; _editing = p;
+        await Store.SaveAsync(next);
+        _updatingProfiles = true;
+        try
+        {
+            var index = -1;
+            for (var i = 0; i < _profiles.Count; i++) if (_profiles[i].Id == p.Id) { index = i; break; }
+            if (index >= 0) _profiles[index] = p; else _profiles.Add(p);
+            ProfilesBox.SelectedItem = p;
+            _editing = p;
+        }
+        finally { _updatingProfiles = false; }
+        QueueCloudSync();
         UpdateDraftBuildOptionsForSelection();
     }
-    private void ProfileChanged(object sender, SelectionChangedEventArgs e) { if (ProfilesBox.SelectedItem is BuildProfile p && !_initializing) LoadProfile(p); }
+    private void ProfileEditorChanged(object sender, SelectionChangedEventArgs e) => ScheduleProfileAutosave();
+    private void ProfileNameChanged(object sender, TextChangedEventArgs e) => ScheduleProfileAutosave();
+    private void ItemsTextChanged(object sender, TextChangedEventArgs e) => ScheduleProfileAutosave();
+    private void ProfileRuneChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ReferenceEquals(sender, S0) || ReferenceEquals(sender, S1)) RenderSecondaryRuneGrid();
+        ScheduleProfileAutosave();
+    }
+
+    private void ScheduleProfileAutosave()
+    {
+        if (_initializing || _loadingProfile || _data == null || ProfileChampionBox?.SelectedItem is not Champion || _closed.IsCancellationRequested) return;
+        _profileEditDelay?.Cancel(); _profileEditDelay?.Dispose();
+        var delay = CancellationTokenSource.CreateLinkedTokenSource(_closed.Token);
+        _profileEditDelay = delay;
+        ProfileSaveStatus.Text = "Guardando cambios…";
+        _profileAutosaveTask = AutosaveProfileAsync(delay);
+    }
+
+    private async Task AutosaveProfileAsync(CancellationTokenSource delay)
+    {
+        try
+        {
+            await Task.Delay(900, delay.Token);
+            await SaveAsync();
+            ProfileSaveStatus.Text = _firebase.IsSignedIn
+                ? "Perfil guardado · sincronizando con Firebase…"
+                : "Perfil guardado automáticamente en este equipo.";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            ProfileSaveStatus.Text = "No se pudo guardar automáticamente · " + ex.Message;
+        }
+        finally
+        {
+            if (ReferenceEquals(_profileEditDelay, delay))
+            {
+                _profileEditDelay = null; delay.Dispose(); _profileAutosaveTask = null;
+            }
+        }
+    }
+    private void ProfileChanged(object sender, SelectionChangedEventArgs e) { if (!_updatingProfiles && ProfilesBox.SelectedItem is BuildProfile p && !_initializing) LoadProfile(p); }
     private void NewClick(object sender, RoutedEventArgs e) => NewProfile();
     private async void SaveClick(object sender, RoutedEventArgs e) => await RunAsync(SaveAsync, "Perfil guardado");
     private async void ConnectClick(object sender, RoutedEventArgs e) { _lastConnect = DateTime.MinValue; await PollAsync(); if (!_lcu.Connected) Show("League no detectado", "Abre League o usa Ruta de League para indicar su archivo lockfile.", InfoBarSeverity.Warning); }
@@ -517,45 +957,74 @@ public sealed partial class MainWindow : Window
         _data.Validate(profile); profile.Name = champion.Name + " - " + role; ProfilesBox.SelectedItem = null; LoadProfile(profile);
     }, "Build cargada · revisa y guarda el perfil");
     private void OpenLolalyticsClick(object sender, RoutedEventArgs e) { if (ProfileChampionBox.SelectedItem is Champion pc && _data != null) Process.Start(new ProcessStartInfo(LolalyticsProvider.PageUrl(pc, ProfileRoleBox.SelectedItem is Role pr ? pr : SelectedRole, _data.Patch)) { UseShellExecute = true }); }
+    private void LoadSpellChoices(BuildProfile? profile = null)
+    {
+        var choices = new List<Choice> { new(0, "Sin configurar") };
+        if (_data != null) choices.AddRange(_data.SummonerSpells(profile?.IsAram == true));
+        Spell1Box.ItemsSource = Spell2Box.ItemsSource = choices;
+        Select(Spell1Box, profile?.Spell1Id ?? 0);
+        Select(Spell2Box, profile?.Spell2Id ?? 0);
+    }
+
+    private async void ImportSummonerSpellsClick(object sender, RoutedEventArgs e) => await RunAsync(async () =>
+    {
+        var profile = ReadProfile();
+        await _lcu.ImportSummonerSpellsAsync(profile, _data!, _closed.Token);
+    }, "Hechizos de invocador aplicados a League");
+
     private async void ImportRunesClick(object sender, RoutedEventArgs e) => await RunAsync(async () => await _lcu.ImportRunesAsync(ReadProfile(), _data!, _closed.Token), "Runas aplicadas a League");
     private async void ImportItemsClick(object sender, RoutedEventArgs e) => await RunAsync(async () => { await SaveAsync(); await _lcu.ImportItemsAsync(_editing!, _data!, _closed.Token, retainedProfileIds: RetainedProfileIds(_editing!)); }, "Conjunto enviado y verificado en la cuenta activa de League");
     private async void LockfileClick(object sender, RoutedEventArgs e)
     {
-        var box = new TextBox { Text = _lcu.LockfilePath ?? "", PlaceholderText = @"C:\Riot Games\League of Legends\lockfile", MinWidth = 420 };
-        var dialog = new ContentDialog { XamlRoot = Root.XamlRoot, Title = "Ruta al lockfile de League", Content = box, PrimaryButtonText = "Guardar y conectar", CloseButtonText = "Cancelar" };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary) await RunAsync(async () => { _lcu.LockfilePath = box.Text.Trim(); await File.WriteAllTextAsync(Path.Combine(_directory, "lockfile-path.txt"), _lcu.LockfilePath); _lcu.Disconnect(); _lastConnect = DateTime.MinValue; await PollAsync(allowWhileBusy: true); if (!_lcu.Connected) throw new IOException("No se pudo conectar. Comprueba la ruta y que League esté abierto."); }, "Conectado a League");
+        var box = new TextBox { Text = _lcu.LockfilePath ?? "", MinWidth = 420 };
+        if (ShowPrompt("Ruta al lockfile de League", box, "Guardar y conectar", "Cancelar")) await RunAsync(async () => { _lcu.LockfilePath = box.Text.Trim(); await File.WriteAllTextAsync(Path.Combine(_directory, "lockfile-path.txt"), _lcu.LockfilePath); _lcu.Disconnect(); _lastConnect = DateTime.MinValue; await PollAsync(allowWhileBusy: true); if (!_lcu.Connected) throw new IOException("No se pudo conectar. Comprueba la ruta y que League esté abierto."); }, "Conectado a League");
     }
-    private void ItemSearchChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs e)
-    {
-        if (e.Reason != AutoSuggestionBoxTextChangeReason.UserInput || _data == null) return;
-        _item = null; sender.ItemsSource = _data.Choices("itemData").Where(x => x.ToString().Contains(sender.Text, StringComparison.OrdinalIgnoreCase)).Take(15).ToList();
-    }
-    private void ItemChosen(AutoSuggestBox sender, AutoSuggestBoxSuggestionChosenEventArgs e) { _item = e.SelectedItem as Choice; if (_item != null) sender.Text = _item.ToString(); }
-    private void AddItemClick(object sender, RoutedEventArgs e) { if (_item != null) ItemsText.Text = ItemBlockText.AppendItem(ItemsText.Text, _item.Id); }
     private async void DeleteClick(object sender, RoutedEventArgs e)
     {
-        var current = ProfilesBox.SelectedItem as BuildProfile; if (current == null) return;
-        var dialog = new ContentDialog { XamlRoot = Root.XamlRoot, Title = "Eliminar " + current.Name, Content = "Se eliminará de tus perfiles locales.", PrimaryButtonText = "Eliminar", CloseButtonText = "Cancelar" };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary) await RunAsync(async () =>
+        if (_busy || ProfilesBox.SelectedItem is not BuildProfile current) return;
+        var message = _firebase.IsSignedIn
+            ? "Se eliminará el perfil de este equipo y de Firebase si está guardado en tu cuenta."
+            : "Se eliminará el perfil guardado en este equipo.";
+        if (ShowPrompt("Eliminar " + current.Name, message, "Eliminar", "Cancelar"))
+            await RunAsync(() => DeleteProfileAsync(current), "Perfil eliminado");
+    }
+
+    private async Task DeleteProfileAsync(BuildProfile current)
+    {
+        if (!_profilesValid) throw new IOException("No se pueden sobrescribir perfiles dañados.");
+        await CancelProfileAutosaveAsync();
+        await WaitForQueuedCloudSyncAsync();
+
+        var cloud = _firebase.IsSignedIn ? await DeleteProfileFromCloudFirstAsync(current.Id) : null;
+        var deletedIds = cloud?.DeletedIds ?? new HashSet<Guid>(_deletedProfileIds) { current.Id };
+        var profiles = cloud?.Profiles ?? _profiles.Where(profile => profile.Id != current.Id).ToList();
+        await SaveDeletedProfileIdsAsync(deletedIds);
+        _deletedProfileIds = deletedIds;
+        await Store.SaveAsync(profiles);
+        if (cloud is { } synced)
         {
-            if (!_profilesValid) throw new IOException("No se pueden sobrescribir perfiles dañados.");
-            var next = _profiles.Where(x => x.Id != current.Id).ToList();
-            await Store.SaveAsync(next);
-            _profiles = next;
-            UpdateDraftBuildOptionsForSelection();
-            _loadout.Reset();
-            ProfilesBox.ItemsSource = _profiles;
-            NewProfile();
-            SetLoadoutStatus("Perfil eliminado. Actualizando la configuración para el campeón confirmado…");
-        }, "Perfil eliminado");
+            if (Json.Write(_favorites) != Json.Write(synced.Favorites))
+                await new FavoriteSettingsStore(_profileDirectory).SaveAsync(synced.Favorites);
+            _favorites = synced.Favorites;
+            _cloudUpdateTime = synced.UpdateTime;
+            _cloudLocalDirty = false;
+            CloudSyncStatus.Text = "Perfil eliminado de Firebase y de este equipo.";
+        }
+
+        SuppressAutomaticLoadoutForCurrentGame(current);
+        _editing = null;
+        ReplaceProfiles(profiles);
+        UpdateDraftBuildOptionsForSelection();
+        _loadout.Reset();
+        NewProfile();
+        SetLoadoutStatus("Perfil eliminado. Actualizando la configuración para el campeón confirmado…");
     }
     private async void JsonClick(object sender, RoutedEventArgs e) => await RunAsync(async () =>
     {
         string text = "";
         try { text = Json.Write(ReadProfile()); } catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException) { }
         var box = new TextBox { Text = text, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinWidth = 440, Height = 420 };
-        var dialog = new ContentDialog { XamlRoot = Root.XamlRoot, Title = "Copia el JSON o pega builds de League", Content = box, PrimaryButtonText = "Importar como nuevos", CloseButtonText = "Cerrar" };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary) await ImportJsonAsync(box.Text);
+        if (ShowPrompt("Copia el JSON o pega builds de League", box, "Importar como nuevos", "Cerrar")) await ImportJsonAsync(box.Text);
     }, "JSON procesado · los perfiles importados aparecen en Mis perfiles");
     private async Task ImportJsonAsync(string text)
     {
@@ -577,18 +1046,17 @@ public sealed partial class MainWindow : Window
         }
         var next = _profiles.Concat(imported).ToList();
         await Store.SaveAsync(next);
-        _profiles = next; ProfilesBox.ItemsSource = _profiles; ProfilesBox.SelectedItem = imported[0];
+        ReplaceProfiles(next);
+        ProfilesBox.SelectedItem = imported[0];
+        QueueCloudSync();
         UpdateDraftBuildOptionsForSelection();
     }
     private async void ImportJsonFileClick(object sender, RoutedEventArgs e) => await RunAsync(async () =>
     {
-        var picker = new Windows.Storage.Pickers.FileOpenPicker();
-        picker.FileTypeFilter.Add(".json");
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
-        var file = await picker.PickSingleFileAsync();
-        if (file == null) return;
-        if ((await file.GetBasicPropertiesAsync()).Size > 4 * 1024 * 1024) throw new InvalidDataException("El archivo supera el límite de 4 MB.");
-        await ImportJsonAsync(await File.ReadAllTextAsync(file.Path));
+        var picker = new Microsoft.Win32.OpenFileDialog { Filter = "Archivos JSON (*.json)|*.json" };
+        if (picker.ShowDialog(this) != true) return;
+        if (new FileInfo(picker.FileName).Length > 4 * 1024 * 1024) throw new InvalidDataException("El archivo supera el límite de 4 MB.");
+        await ImportJsonAsync(await File.ReadAllTextAsync(picker.FileName));
     }, "Importación finalizada · revisa Mis perfiles");
     private void UpdateFavoritesText()
     {
@@ -611,12 +1079,12 @@ public sealed partial class MainWindow : Window
         _updatingAutomation = true;
         AutoHoverBox.IsChecked = _favorites.AutoHoverEnabled;
         AutoLockBox.IsChecked = _favorites.AutoLockEnabled;
-        AutoLockSecondsBox.Value = Math.Clamp(_favorites.AutoLockSeconds, 1, 30);
+        AutoLockSecondsBox.Text = Math.Clamp(_favorites.AutoLockSeconds, 1, 30).ToString(CultureInfo.CurrentCulture);
         AutoLoadoutBox.IsChecked = _favorites.AutoLoadoutEnabled;
         AutoBanBox.IsChecked = _favorites.AutoBanEnabled;
         AutoHoverBox.IsEnabled = _favoritesValid;
         AutoLockBox.IsEnabled = _favoritesValid && _favorites.AutoHoverEnabled;
-        AutoLockSecondsBox.IsEnabled = _favoritesValid && _favorites.AutoHoverEnabled;
+        AutoLockSecondsControl.IsEnabled = _favoritesValid && _favorites.AutoHoverEnabled;
         AutoLoadoutBox.IsEnabled = _favoritesValid;
         AutoBanBox.IsEnabled = _favoritesValid;
         _updatingAutomation = false;
@@ -627,7 +1095,11 @@ public sealed partial class MainWindow : Window
     {
         if (!_favoritesValid) throw new InvalidOperationException("Recupera favorites.json antes de modificarlo; se conserva el original.");
         await _favoritesSave.WaitAsync();
-        try { await new FavoriteSettingsStore(_directory).SaveAsync(_favorites); }
+        try
+        {
+            await new FavoriteSettingsStore(_profileDirectory).SaveAsync(_favorites);
+            QueueCloudSync();
+        }
         catch
         {
             _favoritesValid = false; _favorites.AutoHoverEnabled = false;
@@ -645,20 +1117,10 @@ public sealed partial class MainWindow : Window
         _favorites.AutoBanEnabled = AutoBanBox.IsChecked == true;
         if (!_favorites.AutoLoadoutEnabled) _loadout.Reset();
         AutoLockBox.IsEnabled = _favoritesValid && _favorites.AutoHoverEnabled;
+        AutoLockSecondsControl.IsEnabled = AutoLockBox.IsEnabled;
         UpdateAutomationSummary(SelectedRole);
         try { await SaveFavoritesAsync(); }
         catch (Exception ex) { Show("No se pudo guardar la automatización", ex.Message, InfoBarSeverity.Error); }
-    }
-    private async void AutoLockSecondsChanged(NumberBox sender, NumberBoxValueChangedEventArgs e)
-    {
-        if (_initializing || _updatingAutomation || !_favoritesValid || !double.IsFinite(sender.Value)) return;
-        var seconds = Math.Clamp((int)Math.Round(sender.Value), 1, 30);
-        if (sender.Value != seconds) { sender.Value = seconds; return; }
-        if (_favorites.AutoLockSeconds == seconds) return;
-        _favorites.AutoLockSeconds = seconds;
-        UpdateAutomationSummary(SelectedRole);
-        try { await SaveFavoritesAsync(); }
-        catch (Exception ex) { Show("No se pudo guardar el tiempo de confirmación", ex.Message, InfoBarSeverity.Error); }
     }
     private async void FavoriteStarClick(object sender, RoutedEventArgs e)
     {
@@ -805,6 +1267,17 @@ public sealed partial class MainWindow : Window
             int id = state.Draft?.LocalLockedChampion ?? 0;
             var mine = state.Draft?.MyTeam.FirstOrDefault(p => p.CellId == state.Draft.LocalPlayerCellId);
             var role = mine != null && Roles.TryParse(mine.AssignedPosition, out var assigned) ? assigned : SelectedRole;
+            if (_loadoutSuppressedGameId != (state.Draft?.GameId ?? 0))
+            {
+                _loadoutSuppressedGameId = state.Draft?.GameId ?? 0;
+                _loadoutSuppressedForGame.Clear();
+            }
+            if (id > 0 && _loadoutSuppressedForGame.Contains((id, role)))
+            {
+                _loadout.Reset();
+                SetLoadoutStatus("Aplicación automática pausada para este campeón porque eliminaste su perfil en esta partida.");
+                return;
+            }
             if (state.Draft?.IsAram != true)
             {
                 profile = SelectedDraftBuildProfile(id, role);
@@ -818,24 +1291,39 @@ public sealed partial class MainWindow : Window
                     await _lcu.ImportRunesAsync(prepared, _data!, ct, target);
                     ct.ThrowIfCancellationRequested();
                     await _lcu.ImportItemsAsync(prepared, _data!, ct, target, RetainedProfileIds(prepared));
+                    if (prepared.Spell1Id != 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        await _lcu.ImportSummonerSpellsAsync(prepared, _data!, ct, target);
+                    }
                 });
             SetLoadoutStatus(_loadout.Status);
         }
         catch (Exception ex) { _loadout.Reset(); SetLoadoutStatus("Revisa el perfil antes de aplicar automáticamente: " + ex.Message); }
+    }
+
+    private void SuppressAutomaticLoadoutForCurrentGame(BuildProfile profile)
+    {
+        var draft = _draft;
+        if (draft == null || draft.GameId <= 0) return;
+        var player = draft.MyTeam.FirstOrDefault(p => p.CellId == draft.LocalPlayerCellId);
+        var role = player != null && Roles.TryParse(player.AssignedPosition, out var assigned) ? assigned : SelectedRole;
+        if (role != profile.Role) return;
+        if (_loadoutSuppressedGameId != draft.GameId)
+        {
+            _loadoutSuppressedGameId = draft.GameId;
+            _loadoutSuppressedForGame.Clear();
+        }
+        _loadoutSuppressedForGame.Add((profile.ChampionId, profile.Role));
     }
     private void RetryLoadoutClick(object sender, RoutedEventArgs e) => _loadout.Reset();
     private void ViewPreparedClick(object sender, RoutedEventArgs e)
     {
         if (_loadout.Prepared is { } profile) LoadProfile(Json.Read<BuildProfile>(Json.Write(profile)));
     }
-    private async void AboutClick(object sender, RoutedEventArgs e)
-    {
-        await new ContentDialog
-        {
-            XamlRoot = Root.XamlRoot, Title = "DraftOptimizer · versión inicial", CloseButtonText = "Cerrar",
-            Content = "Inspirado en DraftGap de Vigo Vlugt (MIT). Estadísticas de DraftGap / Lolalytics. El índice de selección usa un cálculo propio; no replica el modelo completo de DraftGap.\n\nDraftOptimizer is not endorsed by Riot Games and does not reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and all associated properties are trademarks or registered trademarks of Riot Games, Inc."
-        }.ShowAsync();
-    }
+    private void AboutClick(object sender, RoutedEventArgs e) =>
+        ShowPrompt("DraftOptimizer · Acerca de",
+            "Inspirado en DraftGap de Vigo Vlugt (MIT). Estadísticas de DraftGap / Lolalytics. El índice de selección usa un cálculo propio; no replica el modelo completo de DraftGap.\n\nDraftOptimizer is not endorsed by Riot Games and does not reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and all associated properties are trademarks or registered trademarks of Riot Games, Inc.", null, "Cerrar");
 }
 
 

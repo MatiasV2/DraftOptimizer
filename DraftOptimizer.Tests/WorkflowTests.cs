@@ -29,7 +29,7 @@ static class WorkflowTests
         };
         var personal = Json.Read<BuildProfile>(Json.Write(valid)); personal.Role = Role.Middle;
         int fetches = 0, applies = 0;
-        Task<BuildProfile> Fetch(Champion c, Role r, string patch, CancellationToken ct) { fetches++; return Task.FromResult(Json.Read<BuildProfile>(Json.Write(personal))); }
+        Task<BuildProfile> Fetch(Champion c, Role r, string patch, bool isAram, CancellationToken ct) { fetches++; return Task.FromResult(Json.Read<BuildProfile>(Json.Write(personal))); }
         Task Apply(BuildProfile p, FinalLoadoutTarget t, CancellationToken ct) { applies++; return Task.CompletedTask; }
         using var loadout = new LoadoutCoordinator();
         var unconfirmed = Draft(); unconfirmed.Actions[0][0].Completed = false;
@@ -60,17 +60,17 @@ static class WorkflowTests
         loadout.Observe(new("ChampSelect", Draft(true)), data, Role.Middle, personal, false, Fetch, Apply); await loadout.Pending;
         check(applies == before, "Desactivar aplicación automática evita escrituras al finalizar");
         var deferred = new TaskCompletionSource<BuildProfile>();
-        loadout.Observe(new("ChampSelect", Draft()), data, Role.Middle, null, true, (_, _, _, _) => deferred.Task, Apply);
+        loadout.Observe(new("ChampSelect", Draft()), data, Role.Middle, null, true, (_, _, _, _, _) => deferred.Task, Apply);
         loadout.Observe(new("GameStart", null), data, Role.Middle, null, true, Fetch, Apply);
         deferred.SetResult(personal); await Task.Yield();
         check(applies == before && loadout.Prepared == null, "Respuesta tardía del proveedor no aplica tras abandonar la selección");
         loadout.Reset();
-        loadout.Observe(new("ChampSelect", Draft(true)), data, Role.Middle, null, true, (_, _, _, _) => throw new IOException("Proveedor no disponible"), Apply);
+        loadout.Observe(new("ChampSelect", Draft(true)), data, Role.Middle, null, true, (_, _, _, _, _) => throw new IOException("Proveedor no disponible"), Apply);
         await loadout.Pending;
         check(applies == before && loadout.Status.Contains("No se pudo"), "Fallo de proveedor se informa sin inventar una configuración");
         loadout.Reset();
         var wrong = Json.Read<BuildProfile>(Json.Write(personal)); wrong.ChampionId = 80;
-        loadout.Observe(new("ChampSelect", Draft(true)), data, Role.Middle, null, true, (_, _, _, _) => Task.FromResult(wrong), Apply); await loadout.Pending;
+        loadout.Observe(new("ChampSelect", Draft(true)), data, Role.Middle, null, true, (_, _, _, _, _) => Task.FromResult(wrong), Apply); await loadout.Pending;
         check(applies == before && loadout.Prepared == null && loadout.Status.Contains("No se pudo"), "Fallback de otro campeón se rechaza antes de aplicar runas u objetos");
         var completed = Draft(); completed.TheirTeam.Add(new() { CellId = 5, ChampionId = 80 }); completed.Actions[0].Add(new() { ActorCellId = 5, Type = "pick", ChampionId = 80, Completed = true });
         check(completed.IsFinalization, "Todos los picks completados identifican el cierre aunque el temporizador aún no cambie");

@@ -23,6 +23,7 @@ public sealed class Dataset : IDisposable
     private string? _suggestionCacheKey;
     private Dataset? _suggestionCacheContext;
     private List<Suggestion>? _suggestionCache;
+    private readonly Dictionary<Role, IReadOnlyDictionary<int, GlobalConfidencePlacement>> _globalConfidenceByRole = [];
     private IReadOnlyDictionary<(string Table, int Id), string> _localizedNames = new Dictionary<(string, int), string>();
     public Dataset(string text) : this(JsonDocument.Parse(text)) { }
     private Dataset(JsonDocument document)
@@ -69,6 +70,37 @@ public sealed class Dataset : IDisposable
         .Where(p => p.Value.GetProperty("positions").EnumerateArray().Any(s => s.GetProperty("slot").GetInt32() == slot))
         .Select(p => new Choice(int.Parse(p.Name), DisplayName("statShardData", int.Parse(p.Name)))).ToList();
 
+    internal static bool SupportsSummonerSpell(int id, bool isAram) =>
+        id is 1 or 3 or 4 or 6 or 7 or 14 or 21 || (isAram ? id is 13 or 32 : id is 11 or 12);
+
+    public IReadOnlyList<Choice> SummonerSpells(bool isAram) =>
+        Root.TryGetProperty("summonerSpellData", out var spells)
+            ? spells.EnumerateObject()
+                .Select(entry => int.Parse(entry.Name))
+                .Where(id => SupportsSummonerSpell(id, isAram))
+                .Select(id => new Choice(id, SummonerSpellName(id)))
+                .OrderBy(spell => spell.Name).ToList()
+            : [];
+
+    public string SummonerSpellName(int id) => id switch
+    {
+        1 => "Purificación", 3 => "Extenuación", 4 => "Destello", 6 => "Fantasma",
+        7 => "Curación", 11 => "Castigo", 12 => "Teleportación", 13 => "Claridad",
+        14 => "Ignición", 21 => "Barrera", 32 => "Marca",
+        _ => DisplayName("summonerSpellData", id)
+    };
+
+    public void ValidateSummonerSpells(BuildProfile profile)
+    {
+        if (profile.Spell1Id == 0 && profile.Spell2Id == 0) return;
+        if (profile.Spell1Id == 0 || profile.Spell2Id == 0 || profile.Spell1Id == profile.Spell2Id)
+            throw new InvalidDataException("Elige dos hechizos de invocador distintos o deja ambos sin configurar.");
+        if (!Root.TryGetProperty("summonerSpellData", out var spells) ||
+            !SupportsSummonerSpell(profile.Spell1Id, profile.IsAram) || !SupportsSummonerSpell(profile.Spell2Id, profile.IsAram) ||
+            !spells.TryGetProperty(profile.Spell1Id.ToString(), out _) || !spells.TryGetProperty(profile.Spell2Id.ToString(), out _))
+            throw new InvalidDataException("Uno de los hechizos de invocador no está disponible para este modo.");
+    }
+
     public void Validate(BuildProfile profile, bool requireRunes = true)
     {
         if (!Enum.IsDefined(profile.Role)) throw new InvalidDataException("Posición inválida.");
@@ -77,6 +109,7 @@ public sealed class Dataset : IDisposable
         if (profile.AssociatedMaps == null || profile.AssociatedMaps.Any(x => x <= 0)) throw new InvalidDataException("Mapas inválidos.");
         if (profile.Blocks == null || profile.Blocks.Count == 0 || profile.Blocks.Any(b => b == null || string.IsNullOrWhiteSpace(b.Name) || b.Items == null || b.Items.Length == 0 || b.Items.Any(id => !Root.GetProperty("itemData").TryGetProperty(id.ToString(), out _))))
             throw new InvalidDataException("Incluye al menos un bloque con objetos válidos del catálogo.");
+        ValidateSummonerSpells(profile);
         if (profile.Perks == null) throw new InvalidDataException("Lista de runas inválida.");
         if (profile.EarlySkills == null || profile.SkillPriority == null || profile.ItemEvidence == null ||
             profile.EarlySkills.Any(s => s is not ("Q" or "W" or "E" or "R")) ||
@@ -102,6 +135,20 @@ public sealed class Dataset : IDisposable
     {
         lock (_suggestionLock) { ct.ThrowIfCancellationRequested(); return SuggestCore(role, draft, context, pickable, includeLocalSelection, ct); }
     }
+    internal IReadOnlyDictionary<int, GlobalConfidencePlacement> GlobalConfidenceByRole(Role role, CancellationToken ct)
+    {
+        lock (_suggestionLock)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!_globalConfidenceByRole.TryGetValue(role, out var placements))
+            {
+                placements = GlobalConfidencePlacement.RankSuggestions(SuggestCore(role, null, null, null, true, ct));
+                _globalConfidenceByRole.Add(role, placements);
+            }
+            return placements;
+        }
+    }
+
     private List<Suggestion> SuggestCore(Role role, DraftSession? draft, Dataset? context, HashSet<int>? pickable, bool includeLocalSelection, CancellationToken ct)
     {
         // Timer ticks do not alter the composition. Picks, intents, roles, bans/actions

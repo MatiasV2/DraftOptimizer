@@ -1,4 +1,5 @@
 using DraftOptimizer.Core;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -11,11 +12,39 @@ public sealed class ChampionListItem : INotifyPropertyChanged
     private Role _role;
     private bool _favorite, _available, _canChange;
     private Suggestion? _recommendation;
+    private GlobalConfidencePlacement? _globalConfidence;
     public ChampionListItem(Champion champion) => _champion = champion;
     public Champion Champion => _champion;
     private string _portraitPatch = "";
     public string PortraitUrl => $"https://ddragon.leagueoflegends.com/cdn/{_portraitPatch}/img/champion/{Champion.Key}.png";
     public void SetPortraitPatch(string patch) { if (_portraitPatch == patch) return; _portraitPatch = patch; Changed(nameof(PortraitUrl)); }
+    public string GlobalConfidenceRank => _globalConfidence is { } confidence ? $"#{confidence.Rank}" : "—";
+    public string GlobalConfidenceTooltip => _globalConfidence is { } confidence
+        ? $"Confianza global · {confidence.Score:F1} · puesto {confidence.Rank} de {confidence.Total}"
+        : "Sin datos de confianza global";
+    public string GlobalConfidenceColor
+    {
+        get
+        {
+            if (_globalConfidence is not { ColorPosition: var position }) return "#A6B5C9";
+            (int R, int G, int B) green = (70, 212, 155), amber = (244, 200, 97), red = (242, 113, 121);
+            var from = position <= 0.5 ? green : amber;
+            var to = position <= 0.5 ? amber : red;
+            double blend = position <= 0.5 ? 2 * position : 2 * position - 1;
+            int Mix(int start, int end) => (int)Math.Round(start + (end - start) * blend);
+            return $"#{Mix(from.R, to.R):X2}{Mix(from.G, to.G):X2}{Mix(from.B, to.B):X2}";
+        }
+    }
+
+    public void SetGlobalConfidence(GlobalConfidencePlacement? confidence)
+    {
+        if (_globalConfidence == confidence) return;
+        _globalConfidence = confidence;
+        Changed(nameof(GlobalConfidenceRank));
+        Changed(nameof(GlobalConfidenceTooltip));
+        Changed(nameof(GlobalConfidenceColor));
+    }
+
     public Role Role => _role;
     public bool IsFavorite => _favorite;
     public bool Available => _available;
