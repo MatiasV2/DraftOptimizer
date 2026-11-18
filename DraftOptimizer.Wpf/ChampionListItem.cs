@@ -12,21 +12,21 @@ public sealed class ChampionListItem : INotifyPropertyChanged
     private Role _role;
     private bool _favorite, _available, _canChange;
     private Suggestion? _recommendation;
-    private GlobalConfidencePlacement? _globalConfidence;
+    private ConfidencePlacement? _confidencePlacement;
     public ChampionListItem(Champion champion) => _champion = champion;
     public Champion Champion => _champion;
     private string _portraitPatch = "";
     public string PortraitUrl => $"https://ddragon.leagueoflegends.com/cdn/{_portraitPatch}/img/champion/{Champion.Key}.png";
     public void SetPortraitPatch(string patch) { if (_portraitPatch == patch) return; _portraitPatch = patch; Changed(nameof(PortraitUrl)); }
-    public string GlobalConfidenceRank => _globalConfidence is { } confidence ? $"#{confidence.Rank}" : "—";
-    public string GlobalConfidenceTooltip => _globalConfidence is { } confidence
-        ? $"Confianza global · {confidence.Score:F1} · puesto {confidence.Rank} de {confidence.Total}"
-        : "Sin datos de confianza global";
-    public string GlobalConfidenceColor
+    public string ConfidenceRank => _confidencePlacement is { } confidence ? $"#{confidence.Rank}" : "—";
+    public string ConfidenceTooltip => _confidencePlacement is { } confidence
+        ? $"{(Recommendation?.HasDraftConfidence == true ? "Confianza del draft" : "Confianza global")} · {confidence.Score:F1} · puesto {confidence.Rank} de {confidence.Total}"
+        : "Sin datos de confianza";
+    public string ConfidenceColor
     {
         get
         {
-            if (_globalConfidence is not { ColorPosition: var position }) return "#A6B5C9";
+            if (_confidencePlacement is not { ColorPosition: var position }) return "#A6B5C9";
             (int R, int G, int B) green = (70, 212, 155), amber = (244, 200, 97), red = (242, 113, 121);
             var from = position <= 0.5 ? green : amber;
             var to = position <= 0.5 ? amber : red;
@@ -36,13 +36,13 @@ public sealed class ChampionListItem : INotifyPropertyChanged
         }
     }
 
-    public void SetGlobalConfidence(GlobalConfidencePlacement? confidence)
+    public void SetConfidencePlacement(ConfidencePlacement? confidence)
     {
-        if (_globalConfidence == confidence) return;
-        _globalConfidence = confidence;
-        Changed(nameof(GlobalConfidenceRank));
-        Changed(nameof(GlobalConfidenceTooltip));
-        Changed(nameof(GlobalConfidenceColor));
+        if (_confidencePlacement == confidence) return;
+        _confidencePlacement = confidence;
+        Changed(nameof(ConfidenceRank));
+        Changed(nameof(ConfidenceTooltip));
+        Changed(nameof(ConfidenceColor));
     }
 
     public Role Role => _role;
@@ -53,9 +53,9 @@ public sealed class ChampionListItem : INotifyPropertyChanged
     public string FavoriteStar => IsFavorite ? "★" : "☆";
     public string FavoriteAction => $"{(IsFavorite ? "Quitar" : "Añadir")} {Champion.Name} {(IsFavorite ? "de" : "a")} favoritos de {Role}";
     public string Label => !Available ? "No disponible en el draft actual" : Recommendation is { UsesGlobalConfidence: true, IsAram: true } aram
-        ? $"WR ARAM {aram.BaseWinrate:P1} · {aram.Games:N0} partidas · confianza {aram.Score:F1}\nLolalytics Emerald+ · Wilson 95% {aram.ConfidenceInterval.Lower:P1}–{aram.ConfidenceInterval.Upper:P1}"
+        ? $"WR ARAM {aram.BaseWinrate:P1} · {aram.Games:N0} partidas · confianza {aram.Score:F1}\nLolalytics Emerald+ · Wilson 99% {aram.ConfidenceInterval.Lower:P1}–{aram.ConfidenceInterval.Upper:P1}"
         : Recommendation is { UsesGlobalConfidence: true } global
-        ? $"WR del rol {global.BaseWinrate:P1} · {global.Games:N0} partidas del rol · confianza global {global.Score:F1}\n{Role} · rango Wilson 95% {global.ConfidenceInterval.Lower:P1}–{global.ConfidenceInterval.Upper:P1} · sin picks"
+        ? $"WR del rol {global.BaseWinrate:P1} · {global.Games:N0} partidas del rol · confianza global {global.Score:F1}\n{Role} · rango Wilson 99% {global.ConfidenceInterval.Lower:P1}–{global.ConfidenceInterval.Upper:P1} · sin picks"
         : Recommendation is { } stats
         ? $"WR draft {(stats.DraftWinrate.HasValue ? stats.DraftWinrate.Value.ToString("P1") : "—")} · confianza {(stats.HasDraftConfidence ? stats.Score.ToString("F1") : "—")}\nRango del draft {(stats.HasDraftConfidence ? $"{stats.ConfidenceInterval.Lower:P1}–{stats.ConfidenceInterval.Upper:P1}" : "sin draft/contexto")} · {stats.ContextSamples} pares · WR base {stats.BaseWinrate:P1}"
         : "Sin estadísticas suficientes para calcular confianza";
@@ -70,7 +70,7 @@ public sealed class ChampionListItem : INotifyPropertyChanged
         if (actionChanged) Changed(nameof(FavoriteAction));
         bool labelChanged = false;
         if (_available != available) { _available = available; Changed(nameof(Available)); labelChanged = true; }
-        if (!EqualityComparer<Suggestion?>.Default.Equals(_recommendation, recommendation)) { _recommendation = recommendation; Changed(nameof(Recommendation)); labelChanged = true; }
+        if (!EqualityComparer<Suggestion?>.Default.Equals(_recommendation, recommendation)) { _recommendation = recommendation; Changed(nameof(Recommendation)); Changed(nameof(ConfidenceTooltip)); labelChanged = true; }
         if (labelChanged) Changed(nameof(Label));
         if (_canChange != canChange) { _canChange = canChange; Changed(nameof(CanChangeFavorites)); }
     }

@@ -23,7 +23,7 @@ public sealed class Dataset : IDisposable
     private string? _suggestionCacheKey;
     private Dataset? _suggestionCacheContext;
     private List<Suggestion>? _suggestionCache;
-    private readonly Dictionary<Role, IReadOnlyDictionary<int, GlobalConfidencePlacement>> _globalConfidenceByRole = [];
+    private readonly Dictionary<Role, IReadOnlyDictionary<int, ConfidencePlacement>> _globalConfidenceByRole = [];
     private IReadOnlyDictionary<(string Table, int Id), string> _localizedNames = new Dictionary<(string, int), string>();
     public Dataset(string text) : this(JsonDocument.Parse(text)) { }
     private Dataset(JsonDocument document)
@@ -135,14 +135,14 @@ public sealed class Dataset : IDisposable
     {
         lock (_suggestionLock) { ct.ThrowIfCancellationRequested(); return SuggestCore(role, draft, context, pickable, includeLocalSelection, ct); }
     }
-    internal IReadOnlyDictionary<int, GlobalConfidencePlacement> GlobalConfidenceByRole(Role role, CancellationToken ct)
+    internal IReadOnlyDictionary<int, ConfidencePlacement> GlobalConfidenceByRole(Role role, CancellationToken ct)
     {
         lock (_suggestionLock)
         {
             ct.ThrowIfCancellationRequested();
             if (!_globalConfidenceByRole.TryGetValue(role, out var placements))
             {
-                placements = GlobalConfidencePlacement.RankSuggestions(SuggestCore(role, null, null, null, true, ct));
+                placements = ConfidencePlacement.RankSuggestions(SuggestCore(role, null, null, null, true, ct));
                 _globalConfidenceByRole.Add(role, placements);
             }
             return placements;
@@ -176,7 +176,7 @@ public sealed class Dataset : IDisposable
             if (!double.IsFinite(wins) || wins < 0 || wins > games) continue;
             var wr = wins / games;
             var analysis = analyzer?.Analyze(composition!.Allies.WithCandidate(role, c.Id), composition.Enemies);
-            WinrateInterval? initial = global ? WinrateConfidence.Wilson95(wins, games) : null;
+            WinrateInterval? initial = global ? WinrateConfidence.Wilson99(wins, games) : null;
             double score = initial.HasValue ? initial.Value.Lower * 100 : analysis?.HasConfidence == true ? analysis.ConfidenceLower * 100 : 0;
             int pairs = analysis == null ? 0 : analysis.MatchupPairs + analysis.SynergyPairs;
             result.Add(new(c, wr, games, score, pairs) { DraftAnalysis = analysis, GlobalConfidenceInterval = initial });

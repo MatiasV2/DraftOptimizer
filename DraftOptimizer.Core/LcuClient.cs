@@ -100,6 +100,24 @@ public sealed class LcuClient : IDisposable
     }
     public async Task<HashSet<int>> PickableAsync(CancellationToken ct = default) =>
         (await SendAsync(HttpMethod.Get, "lol-champ-select/v1/pickable-champion-ids", null, ct)).EnumerateArray().Select(x => x.GetInt32()).ToHashSet();
+    public async Task<Dictionary<Role, HashSet<int>>> ReadFavoritesAsync(CancellationToken ct = default)
+    {
+        var grid = await SendAsync(HttpMethod.Get, "lol-champ-select/v1/all-grid-champions", null, ct);
+        var favorites = new Dictionary<Role, HashSet<int>>();
+        foreach (var champion in grid.EnumerateArray())
+        {
+            if (!champion.TryGetProperty("id", out var id) || !id.TryGetInt32(out var championId) || championId <= 0 ||
+                !champion.TryGetProperty("positionsFavorited", out var positions) || positions.ValueKind != JsonValueKind.Array) continue;
+            foreach (var position in positions.EnumerateArray())
+            {
+                if (position.ValueKind != JsonValueKind.String || !Roles.TryParse(position.GetString()!, out var role)) continue;
+                if (!favorites.TryGetValue(role, out var ids)) favorites[role] = ids = [];
+                ids.Add(championId);
+            }
+        }
+        return favorites;
+    }
+
     public async Task<HashSet<int>> BannableAsync(CancellationToken ct = default) =>
         (await SendAsync(HttpMethod.Get, "lol-champ-select/v1/bannable-champion-ids", null, ct)).EnumerateArray().Select(x => x.GetInt32()).ToHashSet();
     public async Task PickAsync(int championId, bool complete, CancellationToken ct = default)
@@ -130,20 +148,49 @@ public sealed class LcuClient : IDisposable
         await SendAsync(HttpMethod.Patch, $"lol-champ-select/v1/session/actions/{pick.ActionId}", new { championId = pick.ChampionId, completed = pick.Complete }, ct);
         return true;
     }
-    public async Task<bool> AutomaticBanAsync(long gameId, int actionId, int championId, Func<bool> stillEnabled, CancellationToken ct = default)
+    public const int AutomaticBanWindowSeconds = 8;
+    public const int AutomaticBanWindowMilliseconds = AutomaticBanWindowSeconds * 1000;
+
+    public async Task<int?> AutomaticBanAsync(long gameId, int actionId, Role role, IReadOnlyList<int> priorities,
+        Func<int, bool> stillEnabled, CancellationToken ct = default)
     {
-        bool Matches(DraftSession? draft)
+        async Task<DraftSession?> ReadActiveBanAsync()
         {
-            var remaining = draft?.Timer?.RemainingMilliseconds(DateTimeOffset.UtcNow);
-            return draft != null && draft.GameId == gameId && draft.CurrentBan is { ChampionId: 0 } currentBan && currentBan.Id == actionId &&
-                remaining is <= 1000 && !draft.AllyHasPickIntent(championId) && !draft.Unavailable().Contains(championId);
+            var session = (await SendAsync(HttpMethod.Get, "lol-champ-select/v1/session", null, ct))
+                .Deserialize<DraftSession>(Json.Options);
+            if (session?.GameId != gameId || session.CurrentBan?.Id != actionId ||
+                session.Timer?.RemainingMilliseconds(DateTimeOffset.UtcNow) is not (> 0 and <= AutomaticBanWindowMilliseconds))
+                return null;
+
+            var assigned = session.MyTeam.FirstOrDefault(player => player.CellId == session.LocalPlayerCellId)?.AssignedPosition;
+            return assigned != null && Roles.TryParse(assigned, out var assignedRole) && assignedRole != role
+                ? null
+                : session;
         }
-        if (!stillEnabled() || !Matches((await StateAsync(ct)).Draft)) return false;
-        if (!(await BannableAsync(ct)).Contains(championId)) return false;
-        // Re-read the ban action and ally intents immediately before committing the ban.
-        if (!stillEnabled() || !Matches((await StateAsync(ct)).Draft)) return false;
-        await SendAsync(HttpMethod.Patch, $"lol-champ-select/v1/session/actions/{actionId}", new { championId, completed = true }, ct);
-        return true;
+
+        var bannable = await BannableAsync(ct);
+        var draft = await ReadActiveBanAsync();
+        if (draft?.CurrentBan is not { ChampionId: 0 }) return null;
+
+        var unavailable = draft.Unavailable();
+        var championId = priorities.FirstOrDefault(id => bannable.Contains(id) && !unavailable.Contains(id) &&
+            !draft.AllyHasPickIntent(id) && stillEnabled(id));
+        if (championId <= 0) return null;
+
+        var path = $"lol-champ-select/v1/session/actions/{actionId}";
+        await SendAsync(HttpMethod.Patch, path, new { championId, completed = false }, ct);
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            if (attempt > 0) await Task.Delay(100, ct);
+            var selected = await ReadActiveBanAsync();
+            if (selected?.CurrentBan is not { } action || !stillEnabled(championId) || selected.AllyHasPickIntent(championId)) return null;
+            if (action.ChampionId == 0) continue;
+            if (action.ChampionId != championId) return null;
+
+            await SendAsync(HttpMethod.Post, path + "/complete", null, ct);
+            return championId;
+        }
+        throw new InvalidOperationException("League no reflejó el campeón seleccionado para el ban.");
     }
     public async Task ImportRunesAsync(BuildProfile profile, Dataset dataset, CancellationToken ct = default, FinalLoadoutTarget? target = null)
     {
@@ -192,7 +239,8 @@ public sealed class LcuClient : IDisposable
         return draft;
     }
 
-    public async Task ImportSummonerSpellsAsync(BuildProfile profile, Dataset dataset, CancellationToken ct = default, FinalLoadoutTarget? target = null)
+    public async Task ImportSummonerSpellsAsync(BuildProfile profile, Dataset dataset, CancellationToken ct = default, FinalLoadoutTarget? target = null,
+        FlashKey flashKey = FlashKey.Profile)
     {
         dataset.ValidateSummonerSpells(profile);
         if (profile.Spell1Id == 0) throw new InvalidDataException("Configura los hechizos de invocador D y F en el perfil.");
@@ -202,8 +250,8 @@ public sealed class LcuClient : IDisposable
         if (draft.LocalVisibleChampion != profile.ChampionId || draft.IsAram != profile.IsAram)
             throw new InvalidOperationException("El perfil de hechizos no corresponde al campeón o modo seleccionado en League.");
 
-        await SendAsync(HttpMethod.Patch, "lol-champ-select/v1/session/my-selection",
-            new { spell1Id = profile.Spell1Id, spell2Id = profile.Spell2Id }, ct);
+        var (spell1Id, spell2Id) = profile.SpellsFor(flashKey);
+        await SendAsync(HttpMethod.Patch, "lol-champ-select/v1/session/my-selection", new { spell1Id, spell2Id }, ct);
     }
 
     public async Task ImportItemsAsync(BuildProfile profile, Dataset dataset, CancellationToken ct = default, FinalLoadoutTarget? target = null, IReadOnlySet<Guid>? retainedProfileIds = null)
@@ -259,7 +307,7 @@ public sealed class LcuClient : IDisposable
         if (!response.IsSuccessStatusCode)
         {
             if (response.StatusCode == HttpStatusCode.Unauthorized) Disconnect();
-            throw new HttpRequestException($"League rechazó {method} {path}: HTTP {(int)response.StatusCode}. Si son runas, revisa el espacio para páginas editables.", null, response.StatusCode);
+            throw new HttpRequestException($"League rechazó {method} {path}: HTTP {(int)response.StatusCode}.", null, response.StatusCode);
         }
         var text = await response.Content.ReadAsStringAsync(ct);
         if (string.IsNullOrWhiteSpace(text)) return JsonSerializer.SerializeToElement(new { });

@@ -197,6 +197,7 @@ public sealed partial class MainWindow : Window
         if (favorites.Favorites == null || favorites.BanPriorities == null || favorites.Favorites.Any(p => !Enum.IsDefined(p.Key) || p.Value == null || p.Value.Any(id => id <= 0)) ||
             favorites.BanPriorities.Any(p => !Enum.IsDefined(p.Key) || p.Value == null || p.Value.Any(id => id <= 0) || p.Value.Distinct().Count() != p.Value.Count))
             throw new InvalidDataException("Los favoritos sincronizados no son válidos.");
+        if (!Enum.IsDefined(favorites.FlashKey)) favorites.FlashKey = FlashKey.Profile;
         favorites.AutoLockSeconds = Math.Clamp(favorites.AutoLockSeconds, 1, 30);
         if (snapshot.Profiles.Any(p => p == null || p.Id == Guid.Empty || !Enum.IsDefined(p.Role) || p.ChampionId <= 0))
             throw new InvalidDataException("Uno de los perfiles de runas/objetos sincronizados no es válido.");
@@ -521,9 +522,10 @@ public sealed partial class MainWindow : Window
             var state = await _lcu.StateAsync(_closed.Token);
             _draft = state.Draft;
             SetAramRoleMode(_draft?.IsAram == true);
+            if (_draft?.CurrentBan != null && !_draft.IsAram) await AdvanceBanAsync();
             _pickable = _draft == null || _draft.IsFinalization || _draft.IsAram ? null : await _lcu.PickableAsync(_closed.Token);
             ConnectionText.Text = "● League conectado · " + state.Phase;
-            _timer.Interval = _draft == null ? TimeSpan.FromSeconds(2) : TimeSpan.FromMilliseconds(_draft.CurrentPick == null ? 500 : 200);
+            _timer.Interval = _draft == null ? TimeSpan.FromSeconds(2) : TimeSpan.FromMilliseconds(_draft.CurrentPick == null && _draft.CurrentBan == null ? 500 : 200);
             var remaining = _draft?.Timer?.RemainingMilliseconds(DateTimeOffset.UtcNow);
             DraftText.Text = _draft == null ? "Esperando la selección de campeones." : _draft.IsAram ? "ARAM · opciones disponibles del banco." : _draft.CurrentPick != null ? "Es tu turno de seleccionar." + (remaining.HasValue ? $" Quedan {Math.Ceiling(remaining.Value / 1000):F0} s." : "") : "Draft en curso · esperando tu turno.";
             if (_draft == null) _followedChampion = 0;
@@ -543,8 +545,7 @@ public sealed partial class MainWindow : Window
                 _autoDraft.PauseCurrentTurn();
                 AutomationText.Text = "ARAM: selección automática desactivada; usa los cambios disponibles en el banco.";
             }
-            else if (_draft?.CurrentBan != null) await AdvanceBanAsync();
-            else { _autoBanAttempted = null; await AdvanceAutomationAsync(); }
+            else if (_draft?.CurrentBan == null) { _autoBanAttempted = null; await AdvanceAutomationAsync(); }
             AdvanceLoadout(state);
         }
         catch (Exception) when (!_closed.IsCancellationRequested)
@@ -607,10 +608,10 @@ public sealed partial class MainWindow : Window
                 }
                 if (version != _suggestionsVersion || cancellation.IsCancellationRequested || !ReferenceEquals(data, _data)) return;
                 TeamsText.Text = "ARAM · estadísticas globales de ARAM; el puntaje usa WR y partidas de ARAM. No se aplican cruces de líneas.";
-                SetDraftSummary("Las recomendaciones se ordenan con datos de ARAM de Lolalytics (Emerald+), usando confianza Wilson al 95%.");
+                SetDraftSummary("Las recomendaciones se ordenan con datos de ARAM de Lolalytics (Emerald+), usando confianza Wilson al 99%.");
                 if (!statErrors.IsEmpty && candidates.All(c => !_aramStats.ContainsKey((data.Patch, c.Id))))
                     Show("Estadísticas ARAM no disponibles", statErrors.TryPeek(out var message) ? message : "No se recibieron datos de winrate.", InfoBarSeverity.Warning);
-                var aramConfidence = GlobalConfidencePlacement.RankSuggestions(candidates
+                var aramConfidence = ConfidencePlacement.RankSuggestions(candidates
                     .Select(champion => _aramStats.GetValueOrDefault((data.Patch, champion.Id)))
                     .OfType<Suggestion>());
                 var rowsAram = candidates.Where(c => c.Name.Contains(search, StringComparison.OrdinalIgnoreCase) || c.Key.Contains(search, StringComparison.OrdinalIgnoreCase))
@@ -618,7 +619,7 @@ public sealed partial class MainWindow : Window
                     {
                         if (!_rowsById.TryGetValue(c.Id, out var row)) _rowsById[c.Id] = row = new ChampionListItem(c);
                         row.SetPortraitPatch(data.Patch);
-                        row.SetGlobalConfidence(aramConfidence.TryGetValue(c.Id, out var placement) ? placement : null);
+                        row.SetConfidencePlacement(aramConfidence.TryGetValue(c.Id, out var placement) ? placement : null);
                         row.Update(c, role, favorites.Contains(c.Id), true, _aramStats.GetValueOrDefault((data.Patch, c.Id)), favoritesValid);
                         return row;
                     })
@@ -637,7 +638,7 @@ public sealed partial class MainWindow : Window
                 {
                     if (!_rowsById.TryGetValue(c.Id, out var row)) _rowsById[c.Id] = row = new ChampionListItem(c);
                     row.SetPortraitPatch(data.Patch);
-                    row.SetGlobalConfidence(work.GlobalConfidence.TryGetValue(c.Id, out var placement) ? placement : null);
+                    row.SetConfidencePlacement(work.Placements.TryGetValue(c.Id, out var placement) ? placement : null);
                     row.Update(c, role, favorites.Contains(c.Id), !unavailable.Contains(c.Id) && (pickable == null || pickable.Contains(c.Id)), recommendations.GetValueOrDefault(c.Id), favoritesValid);
                     return row;
                 })
@@ -953,10 +954,26 @@ public sealed partial class MainWindow : Window
     {
         if (_data == null || ProfileChampionBox.SelectedItem is not Champion champion) throw new InvalidOperationException("Selecciona el campeón de la configuración.");
         var role = ProfileRoleBox.SelectedItem is Role pr ? pr : SelectedRole;
-        var profile = await new LolalyticsProvider(_http).GetAsync(champion, role, _data.Patch, _closed.Token);
-        _data.Validate(profile); profile.Name = champion.Name + " - " + role; ProfilesBox.SelectedItem = null; LoadProfile(profile);
-    }, "Build cargada · revisa y guarda el perfil");
-    private void OpenLolalyticsClick(object sender, RoutedEventArgs e) { if (ProfileChampionBox.SelectedItem is Champion pc && _data != null) Process.Start(new ProcessStartInfo(LolalyticsProvider.PageUrl(pc, ProfileRoleBox.SelectedItem is Role pr ? pr : SelectedRole, _data.Patch)) { UseShellExecute = true }); }
+        var provider = new LolalyticsProvider(_http);
+        var profile = _aramRoleMode
+            ? await provider.GetAramAsync(champion, _data.Patch, _closed.Token)
+            : await provider.GetAsync(champion, role, _data.Patch, _closed.Token);
+        profile.Role = role;
+        _data.Validate(profile);
+        ProfilesBox.SelectedItem = null;
+        LoadProfile(profile);
+        Show("Build de Lolalytics cargada", profile.Spell1Id > 0
+            ? "Se cargaron runas, objetos y hechizos de invocador."
+            : "Lolalytics no entregó una pareja de hechizos compatible para esta build.", InfoBarSeverity.Success);
+    }, "Build cargada", showSuccess: false);
+
+    private void OpenLolalyticsClick(object sender, RoutedEventArgs e)
+    {
+        if (ProfileChampionBox.SelectedItem is not Champion champion || _data == null) return;
+        var role = ProfileRoleBox.SelectedItem is Role profileRole ? profileRole : SelectedRole;
+        var url = _aramRoleMode ? LolalyticsProvider.AramPageUrl(champion, _data.Patch) : LolalyticsProvider.PageUrl(champion, role, _data.Patch);
+        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+    }
     private void LoadSpellChoices(BuildProfile? profile = null)
     {
         var choices = new List<Choice> { new(0, "Sin configurar") };
@@ -969,7 +986,7 @@ public sealed partial class MainWindow : Window
     private async void ImportSummonerSpellsClick(object sender, RoutedEventArgs e) => await RunAsync(async () =>
     {
         var profile = ReadProfile();
-        await _lcu.ImportSummonerSpellsAsync(profile, _data!, _closed.Token);
+        await _lcu.ImportSummonerSpellsAsync(profile, _data!, _closed.Token, flashKey: _favorites.FlashKey);
     }, "Hechizos de invocador aplicados a League");
 
     private async void ImportRunesClick(object sender, RoutedEventArgs e) => await RunAsync(async () => await _lcu.ImportRunesAsync(ReadProfile(), _data!, _closed.Token), "Runas aplicadas a League");
@@ -1081,6 +1098,8 @@ public sealed partial class MainWindow : Window
         AutoLockBox.IsChecked = _favorites.AutoLockEnabled;
         AutoLockSecondsBox.Text = Math.Clamp(_favorites.AutoLockSeconds, 1, 30).ToString(CultureInfo.CurrentCulture);
         AutoLoadoutBox.IsChecked = _favorites.AutoLoadoutEnabled;
+        FlashKeyBox.SelectedValue = _favorites.FlashKey;
+        FlashKeyBox.IsEnabled = _favoritesValid;
         AutoBanBox.IsChecked = _favorites.AutoBanEnabled;
         AutoHoverBox.IsEnabled = _favoritesValid;
         AutoLockBox.IsEnabled = _favoritesValid && _favorites.AutoHoverEnabled;
@@ -1090,6 +1109,7 @@ public sealed partial class MainWindow : Window
         _updatingAutomation = false;
         UpdateFavoritesText();
         RefreshBanPriorities();
+        UpdateLoadoutPreview();
     }
     private async Task SaveFavoritesAsync()
     {
@@ -1122,6 +1142,41 @@ public sealed partial class MainWindow : Window
         try { await SaveFavoritesAsync(); }
         catch (Exception ex) { Show("No se pudo guardar la automatización", ex.Message, InfoBarSeverity.Error); }
     }
+    private async void FlashKeyChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing || _updatingAutomation || !_favoritesValid ||
+            FlashKeyBox.SelectedValue is not FlashKey flashKey || _favorites.FlashKey == flashKey) return;
+
+        _favorites.FlashKey = flashKey;
+        UpdateLoadoutPreview();
+        try { await SaveFavoritesAsync(); }
+        catch (Exception ex) { Show("No se pudo guardar la tecla de Destello", ex.Message, InfoBarSeverity.Error); }
+    }
+
+    private async void ImportLeagueFavoritesClick(object sender, RoutedEventArgs e)
+    {
+        await RunAsync(async () =>
+        {
+            if (!_favoritesValid) throw new InvalidOperationException("Recupera favorites.json antes de modificar tus favoritos.");
+            if (!_lcu.Connected) throw new InvalidOperationException("Abre League y espera a que DraftOptimizer se conecte.");
+            var imported = await _lcu.ReadFavoritesAsync(_closed.Token);
+            var added = 0;
+            foreach (var (role, ids) in imported)
+            {
+                var favorites = _favorites.ForRole(role);
+                var count = favorites.Count;
+                favorites.UnionWith(ids);
+                _favorites.Favorites[role] = favorites;
+                added += favorites.Count - count;
+            }
+            if (added > 0) await SaveFavoritesAsync();
+            _lastSuggestions = null;
+            RefreshSuggestions();
+            UpdateFavoritesText();
+            Show("Favoritos de League", added > 0 ? $"Favoritos añadidos por posición: {added}." : "No se encontraron favoritos nuevos.", InfoBarSeverity.Success);
+        }, "Favoritos importados", showSuccess: false);
+    }
+
     private async void FavoriteStarClick(object sender, RoutedEventArgs e)
     {
         if (_busy || sender is not Button { DataContext: ChampionListItem row }) return;
@@ -1194,9 +1249,8 @@ public sealed partial class MainWindow : Window
         if (draft == null || action == null) { _autoBanAttempted = null; return; }
         var turn = (draft.GameId, action.Id);
         if (_autoBanAttempted == turn) return;
-        if (action.ChampionId > 0)
+        if (action.ChampionId != 0)
         {
-            _autoBanAttempted = turn;
             BanStatusText.Text = "Ya hay un campeón elegido para este ban; no se cambiará la selección actual.";
             return;
         }
@@ -1208,29 +1262,36 @@ public sealed partial class MainWindow : Window
         var priorities = _favorites.BanPrioritiesFor(role);
         if (priorities.Count == 0) { BanStatusText.Text = $"No hay prioridades de baneos configuradas para {role}."; return; }
         var remaining = draft.Timer?.RemainingMilliseconds(DateTimeOffset.UtcNow);
-        if (remaining is null || remaining > 1000)
+        if (remaining is null)
         {
-            BanStatusText.Text = $"Turno de ban · {role}. Se fijará en el último segundo.";
+            BanStatusText.Text = $"Turno de ban · {role}. Esperando un temporizador válido de League.";
+            return;
+        }
+        if (remaining <= 0)
+        {
+            BanStatusText.Text = $"Se agotó el tiempo del baneo · {role}.";
+            return;
+        }
+        if (remaining > LcuClient.AutomaticBanWindowMilliseconds)
+        {
+            BanStatusText.Text = $"Turno de ban · {role}. Se fijará en los últimos {LcuClient.AutomaticBanWindowSeconds} segundos.";
             return;
         }
         try
         {
-            var latestState = await _lcu.StateAsync(_closed.Token);
-            var latestDraft = latestState.Draft;
-            if (_closed.IsCancellationRequested || latestDraft?.GameId != draft.GameId || latestDraft.CurrentBan?.Id != action.Id) return;
-            var bannable = await _lcu.BannableAsync(_closed.Token);
-            if (_closed.IsCancellationRequested || _draft?.GameId != draft.GameId || _draft.CurrentBan?.Id != action.Id) return;
-            var unavailable = latestDraft.Unavailable();
-            var championId = priorities.FirstOrDefault(id => bannable.Contains(id) && !unavailable.Contains(id) && !latestDraft.AllyHasPickIntent(id));
-            if (championId <= 0) { BanStatusText.Text = $"Ninguna prioridad de {role} se puede banear sin afectar una selección aliada."; return; }
+            var championId = await _lcu.AutomaticBanAsync(draft.GameId, action.Id, role, priorities.ToArray(),
+                id => !_closed.IsCancellationRequested && !_busy && _favoritesValid && _favorites.AutoBanEnabled &&
+                    _favorites.BanPrioritiesFor(role).Contains(id), _closed.Token);
+            if (championId is not { } banned)
+            {
+                BanStatusText.Text = $"Sin baneo automático · {role}. El turno o la disponibilidad de las prioridades cambió.";
+                return;
+            }
             _autoBanAttempted = turn;
-            var sent = await _lcu.AutomaticBanAsync(draft.GameId, action.Id, championId,
-                () => !_closed.IsCancellationRequested && !_busy && _favoritesValid && _favorites.AutoBanEnabled && _favorites.BanPrioritiesFor(role).Contains(championId), _closed.Token);
-            if (!sent) { _autoBanAttempted = null; BanStatusText.Text = "No se envió el ban: el turno cambió, el campeón dejó de estar disponible o un compañero lo preseleccionó."; return; }
-            BanStatusText.Text = $"Baneado automáticamente: {_data?.NameOf(championId) ?? championId.ToString()} · prioridad {role}.";
+            BanStatusText.Text = $"Baneado automáticamente: {_data?.NameOf(banned) ?? banned.ToString()} · prioridad {role}.";
         }
         catch (OperationCanceledException) when (_closed.IsCancellationRequested) { }
-        catch (Exception ex) { BanStatusText.Text = "Baneo automático pausado. " + ex.Message; }
+        catch (Exception ex) { BanStatusText.Text = "No se pudo enviar el baneo automático. " + ex.Message; }
     }
     private async Task AdvanceAutomationAsync()
     {
@@ -1278,14 +1339,17 @@ public sealed partial class MainWindow : Window
                 SetLoadoutStatus("Aplicación automática pausada para este campeón porque eliminaste su perfil en esta partida.");
                 return;
             }
-            if (state.Draft?.IsAram != true)
-            {
+            if (id > 0)
                 profile = SelectedDraftBuildProfile(id, role);
-                if (profile == null && _editing?.ChampionId == id && _editing.Role == role && (ProfileChampionBox.SelectedItem as Champion)?.Id == id && ProfileRoleBox.SelectedItem is Role profileRole && profileRole == role) profile = ReadProfile();
-                profile ??= _profiles.Where(p => p.ChampionId == id && p.Role == role && !p.IsAram).OrderByDescending(p => p.UpdatedAt).FirstOrDefault();
-            }
             _loadout.Observe(state, _data, role, profile, _favoritesValid && _profilesValid && _favorites.AutoLoadoutEnabled,
-                async (champion, position, patch, isAram, ct) => isAram ? await new LolalyticsProvider(_http).GetAramAsync(champion, patch, ct) : (await new LolalyticsProvider(_http).GetOptionsAsync(champion, position, patch, ct)).Recommended.Profile,
+                async (champion, position, patch, isAram, ct) =>
+                {
+                    var provider = new LolalyticsProvider(_http);
+                    if (!isAram) return (await provider.GetOptionsAsync(champion, position, patch, ct)).Recommended.Profile;
+                    var aram = await provider.GetAramAsync(champion, patch, ct);
+                    aram.Role = position;
+                    return aram;
+                },
                 async (prepared, target, ct) =>
                 {
                     await _lcu.ImportRunesAsync(prepared, _data!, ct, target);
@@ -1294,7 +1358,7 @@ public sealed partial class MainWindow : Window
                     if (prepared.Spell1Id != 0)
                     {
                         ct.ThrowIfCancellationRequested();
-                        await _lcu.ImportSummonerSpellsAsync(prepared, _data!, ct, target);
+                        await _lcu.ImportSummonerSpellsAsync(prepared, _data!, ct, target, flashKey: _favorites.FlashKey);
                     }
                 });
             SetLoadoutStatus(_loadout.Status);

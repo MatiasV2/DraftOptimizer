@@ -4,24 +4,24 @@ static class ConfidenceTests
 {
     public static async Task RunAsync(Action<bool, string> check)
     {
-        var benchmark = WinrateConfidence.Wilson95(50, 100);
-        check(Math.Abs(benchmark.Lower - .4038315303659956) < 1e-10 && Math.Abs(benchmark.Upper - .5961684696340044) < 1e-10, "Wilson 95% coincide con referencia numérica independiente");
-        var none = WinrateConfidence.Wilson95(0, 100);
-        var all = WinrateConfidence.Wilson95(100, 100);
-        check(none.Lower < 1e-14 && Math.Abs(all.Upper - 1) < 1e-14 && none.Upper < .04 && all.Lower > .96, "Wilson conserva límites válidos con cero o todas las victorias");
-        check(WinrateConfidence.Wilson95(0, 0) == new WinrateInterval(0, 1), "Sin partidas el intervalo expresa incertidumbre completa");
-        var small = WinrateConfidence.Wilson95(116, 200);
-        var large = WinrateConfidence.Wilson95(5400, 10000);
+        var benchmark = WinrateConfidence.Wilson99(50, 100);
+        check(Math.Abs(benchmark.Lower - .3752796250448398) < 1e-10 && Math.Abs(benchmark.Upper - .6247203749551602) < 1e-10, "Wilson 99% coincide con referencia numérica independiente");
+        var none = WinrateConfidence.Wilson99(0, 100);
+        var all = WinrateConfidence.Wilson99(100, 100);
+        check(none.Lower < 1e-14 && Math.Abs(all.Upper - 1) < 1e-14 && none.Upper < .063 && all.Lower > .937, "Wilson conserva límites válidos con cero o todas las victorias");
+        check(WinrateConfidence.Wilson99(0, 0) == new WinrateInterval(0, 1), "Sin partidas el intervalo expresa incertidumbre completa");
+        var small = WinrateConfidence.Wilson99(116, 200);
+        var large = WinrateConfidence.Wilson99(5400, 10000);
         check(large.Lower > small.Lower, "54% en 10000 partidas supera 58% en 200 por evidencia más sólida");
-        var equalRate = WinrateConfidence.Wilson95(58, 100);
-        var sameRateLarge = WinrateConfidence.Wilson95(5800, 10000);
+        var equalRate = WinrateConfidence.Wilson99(58, 100);
+        var sameRateLarge = WinrateConfidence.Wilson99(5800, 10000);
         check(sameRateLarge.Lower > equalRate.Lower && sameRateLarge.Upper - sameRateLarge.Lower < equalRate.Upper - equalRate.Lower, "Mismo winrate con más partidas reduce incertidumbre y mejora puntaje");
-        check(WinrateConfidence.Wilson95(60, 100).Lower > equalRate.Lower, "Con igual muestra un mejor winrate aumenta puntaje");
+        check(WinrateConfidence.Wilson99(60, 100).Lower > equalRate.Lower, "Con igual muestra un mejor winrate aumenta puntaje");
         check(WinrateConfidence.ContextEffect(52, 100, 5000, 10000) == 0, "Diferencia contextual cubierta por incertidumbre no aumenta puntaje");
         check(WinrateConfidence.ContextEffect(3000, 5000, 5000, 10000) > 0, "Matchup favorable con evidencia suficiente aporta ajuste positivo");
         check(WinrateConfidence.ContextEffect(2000, 5000, 5000, 10000) < 0, "Matchup desfavorable con evidencia suficiente aporta ajuste negativo");
         check(WinrateConfidence.ContextEffect(60, 100, 5000, 10000) < WinrateConfidence.ContextEffect(6000, 10000, 5000, 10000), "Más muestra contextual respalda un efecto mayor con igual winrate");
-        try { WinrateConfidence.Wilson95(101, 100); throw new Exception("Aceptó victorias imposibles"); }
+        try { WinrateConfidence.Wilson99(101, 100); throw new Exception("Aceptó victorias imposibles"); }
         catch (ArgumentOutOfRangeException) { check(true, "Rechaza estadísticas imposibles en cálculo de confianza"); }
         using var dataset = new Dataset("""
         {"version":"16.22.1","date":"2026-11-09","championData":{

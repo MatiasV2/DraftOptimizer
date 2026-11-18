@@ -71,7 +71,19 @@ public sealed class LoadoutCoordinator : IDisposable
                     var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"DraftOptimizer:{(isAram ? "ARAM" : "D2+")}:{champion.Id}:{role}"));
                     result.Id = new Guid(hash.AsSpan(0, 16)); result.Name = isAram ? $"{champion.Name} - ARAM" : $"{champion.Name} - {role}";
                 }
-                else { result.PrimaryStyleId = automatic.PrimaryStyleId; result.SubStyleId = automatic.SubStyleId; result.Perks = automatic.Perks.ToArray(); result.Source += isAram ? " · runas Lolalytics ARAM" : " · runas Lolalytics D2+"; }
+                else
+                {
+                    result.PrimaryStyleId = automatic.PrimaryStyleId;
+                    result.SubStyleId = automatic.SubStyleId;
+                    result.Perks = automatic.Perks.ToArray();
+                    bool addSpells = result.Spell1Id == 0 && result.Spell2Id == 0 && automatic.Spell1Id != 0;
+                    if (addSpells)
+                    {
+                        result.Spell1Id = automatic.Spell1Id;
+                        result.Spell2Id = automatic.Spell2Id;
+                    }
+                    result.Source += $" · {(addSpells ? "runas y hechizos" : "runas")} Lolalytics {(isAram ? "ARAM" : "D2+")}";
+                }
             }
             ct.ThrowIfCancellationRequested(); data.Validate(result);
             if (result.ChampionId != champion.Id || result.Role != role) throw new InvalidDataException("La configuración preparada corresponde a otro campeón o posición.");

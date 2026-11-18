@@ -6,7 +6,9 @@ namespace DraftOptimizer.Core;
 /// <summary>Round-trips item blocks through the multiline editor, including WinUI CR line endings.</summary>
 public static class ItemBlockText
 {
-    public static string CleanTitle(string title) => title.Replace(" · alternativas · confianza 95%", "").Replace(" · confianza 95%", "");
+    public static string CleanTitle(string title) => title
+        .Replace(" · alternativas · confianza 95%", "").Replace(" · confianza 95%", "")
+        .Replace(" · alternativas · confianza 99%", "").Replace(" · confianza 99%", "");
     public static string Format(IEnumerable<ItemBlock> blocks) => string.Join(Environment.NewLine,
         blocks.Select(b => FormatName(b.Name) + ": " + string.Join(", ", b.Items)));
 

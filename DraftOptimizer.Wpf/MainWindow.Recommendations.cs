@@ -14,9 +14,10 @@ public sealed partial class MainWindow
     private string? _draftBuildOptionsKey;
     private CancellationTokenSource? _draftBuildOptionsCancellation;
     private bool _updatingBuildOptionControls;
+    private bool _onlineBuildChosen;
     private readonly System.Collections.Generic.List<RadioButton> _personalBuildButtons = [];
 
-    private string? BuildOptionKey(int championId, Role role) => _data == null ? null : $"{_data.Patch}|{championId}|{role}";
+    private string? BuildOptionKey(int championId, Role role) => _data == null ? null : $"{_data.Patch}|{championId}|{role}|{_aramRoleMode}";
 
     private BuildOption? SelectedDraftBuildOption(int championId, Role role)
     {
@@ -27,20 +28,29 @@ public sealed partial class MainWindow
 
     private BuildProfile? SelectedDraftBuildProfile(int championId, Role role)
     {
-        if (_draftBuildOptionsKey != BuildOptionKey(championId, role)) return null;
-        var personal = _personalBuildButtons.FirstOrDefault(button => button.IsChecked == true)?.Tag as BuildProfile;
-        if (personal != null) return personal;
-        if (_draftBuildOptions == null) return null;
-        return HighWinrateBuildOption.IsChecked == true ? _draftBuildOptions.HighestWinrate.Profile : _draftBuildOptions.Popular.Profile;
+        if (_draftBuildOptionsKey == BuildOptionKey(championId, role))
+        {
+            var personal = _personalBuildButtons.FirstOrDefault(button => button.IsChecked == true)?.Tag as BuildProfile;
+            if (personal != null) return personal;
+            if (_onlineBuildChosen && SelectedDraftBuildOption(championId, role) is { } online) return online.Profile;
+        }
+        return PersonalBuilds(championId, role, _aramRoleMode).FirstOrDefault()
+            ?? SelectedDraftBuildOption(championId, role)?.Profile;
     }
+
+    private System.Collections.Generic.IEnumerable<BuildProfile> PersonalBuilds(int championId, Role role, bool isAram) =>
+        _profiles.Where(profile => profile.ChampionId == championId && profile.Role == role && profile.IsAram == isAram)
+            .OrderByDescending(profile => profile.UpdatedAt);
 
     private void PopulatePersonalBuildOptions(Champion champion, Role role)
     {
         var selectedPersonalId = _personalBuildButtons.FirstOrDefault(button => button.IsChecked == true)?.Tag is BuildProfile selected ? selected.Id : (Guid?)null;
         PersonalBuildOptions.Children.Clear();
         _personalBuildButtons.Clear();
-        var profiles = _profiles.Where(profile => profile.ChampionId == champion.Id && profile.Role == role && !profile.IsAram)
-            .OrderByDescending(profile => profile.UpdatedAt).ToList();
+        var profiles = PersonalBuilds(champion.Id, role, _aramRoleMode).ToList();
+        var defaultPersonalId = _onlineBuildChosen ? null : profiles.FirstOrDefault()?.Id;
+        var chosenId = profiles.Any(profile => profile.Id == selectedPersonalId) ? selectedPersonalId : defaultPersonalId;
+        _updatingBuildOptionControls = true;
         PersonalBuildOptionsTitle.Visibility = profiles.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         for (int index = 0; index < profiles.Count; index++)
         {
@@ -51,18 +61,24 @@ public sealed partial class MainWindow
                 Content = OptionContent($"Personal {index + 1} · {profile.Name}", profile),
                 Tag = profile
             };
-            button.Checked += BuildOptionChanged;
-            button.IsChecked = profile.Id == selectedPersonalId;
             _personalBuildButtons.Add(button);
             PersonalBuildOptions.Children.Add(button);
+            button.IsChecked = profile.Id == chosenId;
+            button.Checked += BuildOptionChanged;
         }
-        if (selectedPersonalId.HasValue && !_personalBuildButtons.Any(button => button.IsChecked == true) && _draftBuildOptions != null)
+        if (chosenId.HasValue)
         {
-            _updatingBuildOptionControls = true;
+            PopularBuildOption.IsChecked = false;
+            HighWinrateBuildOption.IsChecked = false;
+            BuildOptionsStatus.Text = $"Perfil personal elegido · {profiles.First(profile => profile.Id == chosenId).Name}.";
+        }
+        else if (selectedPersonalId.HasValue && _draftBuildOptions != null)
+        {
             PopularBuildOption.IsChecked = ReferenceEquals(_draftBuildOptions.Recommended, _draftBuildOptions.Popular);
             HighWinrateBuildOption.IsChecked = ReferenceEquals(_draftBuildOptions.Recommended, _draftBuildOptions.HighestWinrate);
-            _updatingBuildOptionControls = false;
+            BuildOptionsStatus.Text = "Perfil quitado. Se seleccionó la recomendación de Lolalytics.";
         }
+        _updatingBuildOptionControls = false;
     }
 
     private async void UpdateDraftBuildOptionsForSelection()
@@ -70,7 +86,7 @@ public sealed partial class MainWindow
         if (BuildOptionsStatus == null || _initializing) return;
         var champion = SelectedChampion;
         var key = champion == null ? null : BuildOptionKey(champion.Id, SelectedRole);
-        if (key == _draftBuildOptionsKey && (_draftBuildOptions != null || _draftBuildOptionsCancellation != null))
+        if (key == _draftBuildOptionsKey && (_aramRoleMode || _draftBuildOptions != null || _draftBuildOptionsCancellation != null))
         {
             if (champion != null) PopulatePersonalBuildOptions(champion, SelectedRole);
             return;
@@ -80,6 +96,9 @@ public sealed partial class MainWindow
         _draftBuildOptionsCancellation = null;
         _draftBuildOptions = null;
         _draftBuildOptionsKey = key;
+        _onlineBuildChosen = false;
+        PopularBuildOption.IsChecked = false;
+        HighWinrateBuildOption.IsChecked = false;
         _personalBuildButtons.Clear();
         PersonalBuildOptions.Children.Clear();
         PersonalBuildOptionsTitle.Visibility = Visibility.Collapsed;
@@ -93,10 +112,16 @@ public sealed partial class MainWindow
         }
         var role = SelectedRole;
         PopulatePersonalBuildOptions(champion, role);
+        UpdateLoadoutPreview();
+        if (_aramRoleMode)
+        {
+            if (_personalBuildButtons.Count == 0) BuildOptionsStatus.Text = "La configuración de Lolalytics ARAM se prepara al confirmar.";
+            return;
+        }
         var data = _data;
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_closed.Token);
         _draftBuildOptionsCancellation = cancellation;
-        BuildOptionsStatus.Text = "Cargando runas y builds de Lolalytics D2+…";
+        if (_personalBuildButtons.Count == 0) BuildOptionsStatus.Text = "Cargando runas y builds de Lolalytics D2+…";
         try
         {
             var options = await new LolalyticsProvider(_http).GetOptionsAsync(champion, role, data.Patch, cancellation.Token);
@@ -116,7 +141,7 @@ public sealed partial class MainWindow
             PopularBuildOption.Visibility = Visibility.Visible;
             HighWinrateBuildOption.Visibility = Visibility.Visible;
             _updatingBuildOptionControls = false;
-            BuildOptionsStatus.Text = $"Predeterminada: {(ReferenceEquals(options.Recommended, options.Popular) ? "la más popular" : "la de mejor winrate")}. Puedes cambiarla.";
+            if (!_personalBuildButtons.Any(button => button.IsChecked == true)) BuildOptionsStatus.Text = $"Predeterminada: {(ReferenceEquals(options.Recommended, options.Popular) ? "la más popular" : "la de mejor winrate")}. Puedes cambiarla.";
             UpdateLoadoutPreview();
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
@@ -125,7 +150,8 @@ public sealed partial class MainWindow
             if (_draftBuildOptionsKey == key)
             {
                 _updatingBuildOptionControls = false;
-                BuildOptionsStatus.Text = "No se pudieron cargar las opciones: " + ex.Message;
+                if (!_personalBuildButtons.Any(button => button.IsChecked == true))
+                    BuildOptionsStatus.Text = "No se pudieron cargar las opciones: " + ex.Message;
                 UpdateLoadoutPreview();
             }
         }
@@ -150,6 +176,15 @@ public sealed partial class MainWindow
             }
         }
         content.Children.Add(icons);
+        if (_data != null && profile.Spell1Id > 0 && profile.Spell2Id > 0)
+        {
+            content.Children.Add(new TextBlock
+            {
+                Text = $"{_data.SummonerSpellName(profile.Spell1Id)} + {_data.SummonerSpellName(profile.Spell2Id)}",
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap
+            });
+        }
         return content;
     }
 
@@ -157,6 +192,7 @@ public sealed partial class MainWindow
     {
         if (_updatingBuildOptionControls || _draftBuildOptionsKey == null) return;
         var personal = _personalBuildButtons.FirstOrDefault(button => button.IsChecked == true)?.Tag as BuildProfile;
+        _onlineBuildChosen = personal == null;
         _updatingBuildOptionControls = true;
         if (personal != null)
         {

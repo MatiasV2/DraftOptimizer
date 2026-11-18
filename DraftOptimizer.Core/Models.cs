@@ -28,6 +28,8 @@ public sealed record Choice(int Id, string Name, string? IconUrl = null)
 {
     public override string ToString() => $"{Name} · {Id}";
 }
+public enum FlashKey { Profile, D, F }
+
 public sealed class BuildProfile
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -40,6 +42,14 @@ public sealed class BuildProfile
     public int[] Perks { get; set; } = [];
     public int Spell1Id { get; set; }
     public int Spell2Id { get; set; }
+
+    public (int D, int F) SpellsFor(FlashKey flashKey)
+    {
+        const int flashId = 4;
+        bool swap = (flashKey == FlashKey.D && Spell2Id == flashId) ||
+                    (flashKey == FlashKey.F && Spell1Id == flashId);
+        return swap ? (Spell2Id, Spell1Id) : (Spell1Id, Spell2Id);
+    }
     public List<ItemBlock> Blocks { get; set; } = [];
     public string[] EarlySkills { get; set; } = [];
     public string[] SkillPriority { get; set; } = [];

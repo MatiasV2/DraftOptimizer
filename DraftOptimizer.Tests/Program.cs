@@ -168,6 +168,10 @@ sealed class FakeLeague : HttpMessageHandler
     public int ChampionId { get; set; } = 103;
     public long GameId { get; set; } = 700;
     public int ActionId { get; set; } = 9;
+    public string ActionType { get; set; } = "pick";
+    public int AllyIntent { get; set; }
+    public int HoveredChampion { get; set; }
+    public Action? OnBanSelection { get; set; }
     public string Role { get; set; } = "middle";
     public double? RemainingMs { get; set; }
     public bool InfiniteTimer { get; set; }
@@ -184,16 +188,22 @@ sealed class FakeLeague : HttpMessageHandler
         var path = request.RequestUri!.AbsolutePath;
         if (request.Method != HttpMethod.Get)
         {
-            var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync(ct))!;
+            var body = request.Content == null ? new JsonObject() : JsonNode.Parse(await request.Content.ReadAsStringAsync(ct))!;
             Writes.Add((request.Method.Method, path, body));
             if (path.EndsWith("/sets")) _sets = body.ToJsonString();
+            if (ActionType == "ban" && request.Method == HttpMethod.Patch && path.EndsWith($"/actions/{ActionId}"))
+            {
+                HoveredChampion = body["championId"]!.GetValue<int>();
+                OnBanSelection?.Invoke();
+            }
             return new(System.Net.HttpStatusCode.NoContent);
         }
         string result = path switch
         {
             "/lol-gameflow/v1/gameflow-phase" => Json.Write(Phase),
-            "/lol-champ-select/v1/session" => Json.Write(new DraftSession { GameId = GameId, LocalPlayerCellId = 2, Timer = RemainingMs.HasValue ? new DraftTimer { AdjustedTimeLeftInPhase = RemainingMs, InternalNowInEpochMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Phase = TimerPhase, IsInfinite = InfiniteTimer } : null, MyTeam = [new() { CellId = 2, ChampionId = ChampionId, AssignedPosition = Role }], Actions = [[new() { Id = ActionId, ActorCellId = 2, Type = "pick", IsInProgress = InProgress, Completed = Completed, ChampionId = Completed ? ChampionId : 0 }]] }),
-            "/lol-champ-select/v1/pickable-champion-ids" => ReadAvailability(),
+            "/lol-champ-select/v1/session" => Json.Write(new DraftSession { GameId = GameId, LocalPlayerCellId = 2, Timer = RemainingMs.HasValue ? new DraftTimer { AdjustedTimeLeftInPhase = RemainingMs, InternalNowInEpochMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Phase = TimerPhase, IsInfinite = InfiniteTimer } : null, MyTeam = [new() { CellId = 2, ChampionId = ChampionId, AssignedPosition = Role }, new() { CellId = 3, ChampionPickIntent = AllyIntent }], Actions = [[new() { Id = ActionId, ActorCellId = 2, Type = ActionType, IsInProgress = InProgress, Completed = Completed, ChampionId = Completed ? ChampionId : HoveredChampion }]] }),
+            "/lol-champ-select/v1/pickable-champion-ids" or "/lol-champ-select/v1/bannable-champion-ids" => ReadAvailability(),
+            "/lol-champ-select/v1/all-grid-champions" => """[{"id":103,"positionsFavorited":["MIDDLE","UTILITY","MIDDLE"]},{"id":238,"positionsFavorited":["middle","unknown"]},{"id":99,"positionsFavorited":[]}]""",
             "/lol-perks/v1/pages" => ReadPages(),
             "/lol-summoner/v1/current-summoner" => """{"summonerId":7}""",
             "/lol-item-sets/v1/item-sets/7/sets" => _sets,

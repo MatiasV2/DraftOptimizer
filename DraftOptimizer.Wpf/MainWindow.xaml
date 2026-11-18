@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Window x:Class="DraftOptimizer.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:DraftOptimizer" Title="DraftOptimizer" Background="#0A1019" Width="1100" Height="850" MinWidth="940" MinHeight="650" Icon="DraftOptimizer.ico" TextElement.Foreground="#EDF2FA">
+<Window x:Class="DraftOptimizer.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:DraftOptimizer" xmlns:core="clr-namespace:DraftOptimizer.Core;assembly=DraftOptimizer.Core" Title="DraftOptimizer" Background="#0A1019" Width="1100" Height="850" MinWidth="940" MinHeight="650" Icon="DraftOptimizer.ico" TextElement.Foreground="#EDF2FA">
   <Grid x:Name="Root" Margin="20" Background="#0A1019" Loaded="OnLoaded">
     <Grid.Resources>
       <ResourceDictionary>
@@ -44,13 +44,13 @@
               <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <Grid Width="76" Height="76" HorizontalAlignment="Center" VerticalAlignment="Center"
-                  ToolTip="{Binding GlobalConfidenceTooltip}" AutomationProperties.Name="{Binding GlobalConfidenceTooltip}">
-              <Border BorderBrush="{Binding GlobalConfidenceColor}" BorderThickness="2">
+                  ToolTip="{Binding ConfidenceTooltip}" AutomationProperties.Name="{Binding ConfidenceTooltip}">
+              <Border BorderBrush="{Binding ConfidenceColor}" BorderThickness="2">
                 <local:PortraitImage Width="72" Height="72" Url="{Binding PortraitUrl}" Stretch="UniformToFill" />
               </Border>
-              <Border Background="{Binding GlobalConfidenceColor}" CornerRadius="0,0,0,5" Padding="5,1"
+              <Border Background="{Binding ConfidenceColor}" CornerRadius="0,0,0,5" Padding="5,1"
                       HorizontalAlignment="Right" VerticalAlignment="Top">
-                <TextBlock Text="{Binding GlobalConfidenceRank}" Foreground="#101923" FontSize="10" FontWeight="Bold" />
+                <TextBlock Text="{Binding ConfidenceRank}" Foreground="#101923" FontSize="10" FontWeight="Bold" />
               </Border>
             </Grid>
             <TextBlock Grid.Row="1" Text="{Binding Champion.Name}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" HorizontalAlignment="Center" Margin="0,5,0,0" />
@@ -280,6 +280,7 @@
                 <Expander Header="Favoritos y selección automática" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Margin="0,5,0,0">
                   <StackPanel Margin="4,10,4,4">
                     <TextBlock Text="Marca ★ junto a un campeón para guardarlo como favorito de esa línea." TextWrapping="Wrap" FontSize="12" />
+                    <Button Content="Importar favoritos de League" Click="ImportLeagueFavoritesClick" HorizontalAlignment="Left" Margin="0,5,0,0" />
                     <TextBlock x:Name="FavoritesText" Text="Cargando favoritos…" Foreground="#A6B5C9" TextWrapping="Wrap" FontSize="12" Margin="0,5,0,0" />
                     <CheckBox x:Name="AutoHoverBox" Content="Preseleccionar la mejor opción (favoritos primero)" Checked="AutomationChanged" Unchecked="AutomationChanged" Margin="0,5,0,0" />
                     <CheckBox x:Name="AutoLockBox" Content="Confirmar automáticamente cerca del final del turno" Checked="AutomationChanged" Unchecked="AutomationChanged" Margin="0,5,0,0" />
@@ -294,6 +295,14 @@
                     <TextBlock x:Name="AutomationText" Text="Esperando tu turno de selección." Foreground="#78E0C4" TextWrapping="Wrap" FontSize="12" Margin="0,5,0,0" />
                     <TextBlock Text="La prioridad combina winrate, confianza por partidas y composición. El puntaje orienta la elección, no predice el resultado de la partida." Foreground="#A6B5C9" TextWrapping="Wrap" FontSize="12" Margin="0,5,0,0" />
                     <CheckBox x:Name="AutoLoadoutBox" Content="Aplicar hechizos, runas y objetos al confirmar campeón" Checked="AutomationChanged" Unchecked="AutomationChanged" Margin="0,5,0,0" />
+                    <StackPanel Margin="0,5,0,0">
+                      <Label Content="Tecla de Destello al aplicar hechizos" Target="{Binding ElementName=FlashKeyBox}" Padding="0,0,0,3" />
+                      <ComboBox x:Name="FlashKeyBox" SelectedValuePath="Tag" SelectionChanged="FlashKeyChanged" HorizontalAlignment="Left">
+                        <ComboBoxItem Content="Según la build" Tag="{x:Static core:FlashKey.Profile}" />
+                        <ComboBoxItem Content="D" Tag="{x:Static core:FlashKey.D}" />
+                        <ComboBoxItem Content="F" Tag="{x:Static core:FlashKey.F}" />
+                      </ComboBox>
+                    </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
                       <Button Content="Reintentar configuración" Click="RetryLoadoutClick" />
                       <Button Content="Ver configuración preparada" Click="ViewPreparedClick" />
@@ -302,7 +311,7 @@
                 </Expander>
                 <Border Height="1" Background="#29384B" Margin="0,5,0,0" />
                 <WrapPanel Margin="0,5,0,0">
-                  <Button Content="Cargar Lolalytics D2+" Click="LolalyticsClick" />
+                  <Button Content="Cargar build de Lolalytics" Click="LolalyticsClick" />
                   <Button Content="Abrir Lolalytics ↗" Click="OpenLolalyticsClick" />
                 </WrapPanel>
                 <TextBlock x:Name="SourceText" Text="Perfil personalizado" Foreground="#A6B5C9" TextWrapping="Wrap" FontSize="12" Margin="0,5,0,0" />
@@ -433,7 +442,7 @@
                 <TextBlock Text="Define tus prioridades" FontSize="24" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,5,0,0" />
                 <TextBlock Text="El sistema omite cualquier campeón que un compañero tenga preseleccionado." Foreground="#A6B5C9" TextWrapping="Wrap" Margin="0,5,0,0" />
                 <CheckBox x:Name="AutoBanBox" Checked="AutomationChanged" Unchecked="AutomationChanged" Margin="0,5,0,0">
-                  <TextBlock Text="Banear automáticamente en el último segundo" TextWrapping="Wrap" />
+                  <TextBlock Text="Banear automáticamente en los últimos 8 segundos" TextWrapping="Wrap" />
                 </CheckBox>
                 <StackPanel Margin="0,3,8,3">
                   <TextBlock Text="Línea" Margin="0,0,0,3" />

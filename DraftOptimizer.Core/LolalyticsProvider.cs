@@ -51,7 +51,7 @@ public sealed class LolalyticsProvider(HttpClient http)
         if (!winrate.Success || !double.TryParse(winrate.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var wr) || games <= 0)
             throw new InvalidDataException($"Lolalytics no entregó estadísticas ARAM legibles para {champion.Name}.");
         var rate = wr / 100d;
-        var interval = WinrateConfidence.Wilson95(rate * games, games);
+        var interval = WinrateConfidence.Wilson99(rate * games, games);
         return new(champion, rate, games, interval.Lower * 100, 0) { GlobalConfidenceInterval = interval, IsAram = true };
     }
     public static BuildProfile ParsePage(string html, int championId, Role role, string patch, string? expectedTier = null, bool isAram = false)
@@ -145,7 +145,7 @@ public sealed class LolalyticsProvider(HttpClient http)
             var runeStats = Stats(data["runes"]);
             var coreStats = Stats(data["items"]?["core"]);
             if (runeStats == null && coreStats == null) throw new InvalidDataException($"Lolalytics no entregó winrate y partidas para {label}.");
-            WinrateInterval? RuneInterval((double Rate, int Games)? stats) => stats is { } value ? WinrateConfidence.Wilson95(value.Rate * value.Games, value.Games) : null;
+            WinrateInterval? RuneInterval((double Rate, int Games)? stats) => stats is { } value ? WinrateConfidence.Wilson99(value.Rate * value.Games, value.Games) : null;
             var runeConfidence = RuneInterval(runeStats);
             var buildConfidence = RuneInterval(coreStats);
             var score = new[] { runeConfidence?.Lower, buildConfidence?.Lower }.Where(x => x.HasValue).Min()!.Value;
@@ -187,9 +187,9 @@ public sealed class LolalyticsProvider(HttpClient http)
         }
         void AddRanked(string slot, string title, JsonNode? candidates)
         {
-            var ranked = BuildItemConfidence.Rank(slot, Observations(candidates));
+            var ranked = BuildItemConfidence.Rank(slot, Observations(candidates), fillFromSmallSamples: true);
             if (ranked.Count == 0) return;
-            evidence.AddRange(ranked);
+            evidence.AddRange(ranked.Where(x => x.Games >= BuildItemConfidence.MinimumGames));
             blocks.Add(new() { Name = title, Items = ranked.Select(x => x.ItemId).ToArray() });
         }
         bool hasPositions = details?["item1"] is JsonArray;
@@ -227,7 +227,6 @@ public sealed class LolalyticsProvider(HttpClient http)
                 var max = position <= 3 && priority.Length >= position ? $" · maxear {priority[position - 1]}" : "";
                 AddRanked($"item{position}", $"Objeto {position}{max}", details![$"item{position}"]);
             }
-            if (!evidence.Any(x => x.Slot == "item1")) throw new InvalidDataException("Lolalytics no ofrece objetos con al menos 200 partidas para la primera compra completa.");
         }
         else
         {
@@ -235,15 +234,9 @@ public sealed class LolalyticsProvider(HttpClient http)
             blocks.Add(new() { Name = "Núcleo popular · sin datos para confianza", Items = Values(items["core"]?["set"]) });
             foreach (var key in new[] { "item4", "item5", "item6" }) AddRanked(key, $"Alternativas · {key}", items[key]);
         }
-        int spell1Id = 0, spell2Id = 0;
-        if (pick["sums"] is JsonObject summoners && summoners["ids"] is JsonArray { Count: 2 } spells &&
-            spells[0] is JsonValue first && first.TryGetValue<int>(out var firstId) &&
-            spells[1] is JsonValue second && second.TryGetValue<int>(out var secondId) &&
-            firstId != secondId && Dataset.SupportsSummonerSpell(firstId, isAram) && Dataset.SupportsSummonerSpell(secondId, isAram))
-        {
-            spell1Id = firstId;
-            spell2Id = secondId;
-        }
+        var (spell1Id, spell2Id) = ReadSummonerSpells(pick, isAram)
+            ?? ReadSummonerSpells(summary[variant == "pick" ? "win" : "pick"], isAram)
+            ?? (0, 0);
         return new BuildProfile
         {
             Name = isAram ? "Lolalytics · ARAM" : $"Lolalytics · {role}", ChampionId = championId, Role = role, IsAram = isAram,
@@ -252,8 +245,20 @@ public sealed class LolalyticsProvider(HttpClient http)
             Spell1Id = spell1Id, Spell2Id = spell2Id,
             EarlySkills = early, SkillPriority = priority, ItemEvidence = evidence,
             Blocks = blocks.Where(b => b.Items.Length > 0).ToList(), AssociatedMaps = isAram ? [12] : [11],
-            Source = hasPositions ? (isAram ? "Lolalytics · ARAM · Emerald+ · Global · Wilson 95% · ≥200 partidas" : "Lolalytics · D2+ · Global · Solo/Duo · Wilson 95% · ≥200 partidas · mínimo 3 alternativas por posición y hasta 2 inicios") : "Lolalytics · núcleo popular · sin muestras por posición", Patch = patch
+            Source = hasPositions ? (isAram ? "Lolalytics · ARAM · Emerald+ · Global · Wilson 99% · confianza visible desde 200 partidas" : "Lolalytics · D2+ · Global · Solo/Duo · Wilson 99% · confianza visible desde 200 partidas · mínimo 4 alternativas por posición si hay datos suficientes y hasta 2 inicios") : "Lolalytics · núcleo popular · sin muestras por posición", Patch = patch
         };
+    }
+
+    private static (int First, int Second)? ReadSummonerSpells(JsonNode? build, bool isAram)
+    {
+        if (build is not JsonObject option || option["sums"] is not JsonObject spells ||
+            spells["ids"] is not JsonArray { Count: 2 } ids ||
+            !int.TryParse(ids[0]?.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var first) ||
+            !int.TryParse(ids[1]?.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var second) ||
+            first == second || !Dataset.SupportsSummonerSpell(first, isAram) || !Dataset.SupportsSummonerSpell(second, isAram))
+            return null;
+
+        return (first, second);
     }
 }
 

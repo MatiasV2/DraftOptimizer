@@ -1,16 +1,16 @@
 namespace DraftOptimizer.Core;
 
-/// <summary>A champion's relative position among candidates with global confidence data.</summary>
-public readonly record struct GlobalConfidencePlacement(int Rank, int Total, double Score, double ColorPosition)
+/// <summary>A champion's relative position among candidates with confidence data.</summary>
+public readonly record struct ConfidencePlacement(int Rank, int Total, double Score, double ColorPosition)
 {
-    public static IReadOnlyDictionary<int, GlobalConfidencePlacement> RankSuggestions(IEnumerable<Suggestion> suggestions)
+    public static IReadOnlyDictionary<int, ConfidencePlacement> RankSuggestions(IEnumerable<Suggestion> suggestions)
     {
-        var groups = suggestions.Where(suggestion => suggestion.UsesGlobalConfidence && double.IsFinite(suggestion.Score))
+        var groups = suggestions.Where(suggestion => suggestion.HasConfidence && double.IsFinite(suggestion.Score))
             .GroupBy(suggestion => suggestion.Score)
             .OrderByDescending(group => group.Key)
             .ToArray();
         int total = groups.Sum(group => group.Count());
-        var placements = new Dictionary<int, GlobalConfidencePlacement>(total);
+        var placements = new Dictionary<int, ConfidencePlacement>(total);
         int rank = 1;
         for (int i = 0; i < groups.Length; i++)
         {

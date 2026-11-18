@@ -119,7 +119,7 @@ public sealed partial class MainWindow
                 {
                     if (!_simulationRowCache.TryGetValue(champion.Id, out var row)) _simulationRowCache[champion.Id] = row = new(champion);
                     row.SetPortraitPatch(_data.Patch);
-                    row.SetGlobalConfidence(work.GlobalConfidence.TryGetValue(champion.Id, out var placement) ? placement : null);
+                    row.SetConfidencePlacement(work.Placements.TryGetValue(champion.Id, out var placement) ? placement : null);
                     row.Update(champion, role, false, true, recommendations.GetValueOrDefault(champion.Id), false);
                     rows.Add(row);
                 }

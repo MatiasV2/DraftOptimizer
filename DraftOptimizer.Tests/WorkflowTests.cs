@@ -53,9 +53,17 @@ static class WorkflowTests
         loadout.Observe(new("ChampSelect", Draft()), data, Role.Middle, null, true, Fetch, Apply); await loadout.Pending;
         check(loadout.Prepared!.Id == automaticId, "Fallback tiene identidad estable para no duplicar conjuntos entre partidas");
         loadout.Reset(); var itemsOnly = Json.Read<BuildProfile>(Json.Write(personal)); itemsOnly.Perks = [];
+        itemsOnly.Spell1Id = itemsOnly.Spell2Id = 0;
+        personal.Spell1Id = 4; personal.Spell2Id = 14;
         var originalItems = itemsOnly.Blocks.SelectMany(x => x.Items).ToArray();
         loadout.Observe(new("ChampSelect", Draft()), data, Role.Middle, itemsOnly, true, Fetch, Apply); await loadout.Pending;
         check(loadout.Prepared!.Perks.Length == 9 && loadout.Prepared.Blocks.SelectMany(x => x.Items).SequenceEqual(originalItems), "Perfil solo de objetos conserva sus compras y completa runas desde D2+");
+        check(loadout.Prepared!.SpellsFor(FlashKey.F) == (14, 4) && itemsOnly.Spell1Id == 0,
+            "La búsqueda que completa las runas también trae hechizos para un perfil de objetos");
+        loadout.Reset();
+        itemsOnly.Spell1Id = 4; itemsOnly.Spell2Id = 12;
+        loadout.Observe(new("ChampSelect", Draft()), data, Role.Middle, itemsOnly, true, Fetch, Apply); await loadout.Pending;
+        check(loadout.Prepared!.SpellsFor(FlashKey.Profile) == (4, 12), "Los hechizos del perfil personal tienen prioridad sobre los de Lolalytics");
         loadout.Reset(); int before = applies;
         loadout.Observe(new("ChampSelect", Draft(true)), data, Role.Middle, personal, false, Fetch, Apply); await loadout.Pending;
         check(applies == before, "Desactivar aplicación automática evita escrituras al finalizar");

@@ -92,6 +92,37 @@ static class AutoDraftTests
         await new AutoDraftController().TickAsync(allyData, allyData, allyDraft, [103, 238], settings, Role.Middle, now, request => { allyWrites.Add(request); return Task.FromResult(true); });
         check(allyWrites.Single().ChampionId == 238, "Sinergia con aliado utility modifica la prioridad entre favoritos");
 
+        var banHandler = new FakeLeague { RemainingMs = 4170, ChampionId = 0, ActionType = "ban", Available = [103, 238], AllyIntent = 103 };
+        using var banLcu = new LcuClient(new HttpClient(banHandler) { BaseAddress = new Uri("https://127.0.0.1:29999/") });
+        var favoritesFromClient = await banLcu.ReadFavoritesAsync();
+        check(favoritesFromClient.Count == 2 && favoritesFromClient[Role.Middle].SetEquals([103, 238]) && favoritesFromClient[Role.Support].SetEquals([103]),
+            "Importa favoritos por posición, incluida Utility, sin duplicados");
+        var banned = await banLcu.AutomaticBanAsync(700, 9, Role.Middle, [99, 103, 238], _ => true);
+        check(banned == 238 && banHandler.Writes.Count == 2 &&
+            banHandler.Writes[0].Method == "PATCH" && banHandler.Writes[0].Body["championId"]!.GetValue<int>() == 238 &&
+            banHandler.Writes[1] is { Method: "POST", Path: "/lol-champ-select/v1/session/actions/9/complete" },
+            "Con 4,17 segundos selecciona y confirma el ban, protegiendo al aliado y omitiendo candidatos no disponibles");
+        banHandler.OnPickable = () => banHandler.HoveredChampion = 103;
+        banned = await banLcu.AutomaticBanAsync(700, 9, Role.Middle, [238], _ => true);
+        check(banned == null && banHandler.Writes.Count == 2, "Respeta una selección manual posterior a la consulta de disponibilidad");
+        banHandler.OnPickable = null;
+        banHandler.HoveredChampion = 0;
+        banHandler.RemainingMs = 0;
+        banned = await banLcu.AutomaticBanAsync(700, 9, Role.Middle, [238], _ => true);
+        check(banned == null && banHandler.Writes.Count == 2, "No envía un ban con el tiempo vencido");
+
+        banHandler.RemainingMs = 4170;
+        banHandler.OnBanSelection = () => banHandler.AllyIntent = 238;
+        banned = await banLcu.AutomaticBanAsync(700, 9, Role.Middle, [238], _ => true);
+        check(banned == null && banHandler.Writes.Count == 3 && banHandler.Writes.Last().Method == "PATCH",
+            "Si un aliado preselecciona al campeón entre PATCH y POST, el ban no se confirma");
+        banHandler.OnBanSelection = () => banHandler.HoveredChampion = 103;
+        banHandler.HoveredChampion = 0;
+        banHandler.AllyIntent = 0;
+        banned = await banLcu.AutomaticBanAsync(700, 9, Role.Middle, [238], _ => true);
+        check(banned == null && banHandler.Writes.Count == 4 && banHandler.Writes.Last().Method == "PATCH",
+            "Una selección manual entre PATCH y POST no se confirma automáticamente");
+
         var handler = new FakeLeague { RemainingMs = 500 };
         using var lcu = new LcuClient(new HttpClient(handler) { BaseAddress = new Uri("https://127.0.0.1:29999/") });
         var pick = new AutomaticPickRequest(700, 9, 2, 103, 103, Role.Middle, true);
