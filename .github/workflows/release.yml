@@ -1,0 +1,101 @@
+name: Windows x64 release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install .NET SDKs
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Set build version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          $version = '0.0.0-ci'
+          if ($env:REF_TYPE -eq 'tag') {
+            if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+              throw 'Use a version tag such as v0.1.0 or v0.1.0-beta.1.'
+            }
+            $version = $env:RELEASE_TAG.Substring(1)
+          }
+          "BUILD_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Build solution
+        run: dotnet build DraftOptimizer.slnx --configuration Release -p:Version="$env:BUILD_VERSION"
+
+      - name: Run regression checks
+        run: dotnet DraftOptimizer.Tests/bin/Release/net8.0/DraftOptimizer.Tests.dll
+
+      - name: Publish independent Windows x64 app
+        run: |
+          dotnet publish DraftOptimizer.Wpf/DraftOptimizer.Wpf.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishTrimmed=false -p:Version="$env:BUILD_VERSION" --output artifacts/app
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($file in @('DraftOptimizer.exe', 'DraftOptimizer.dll', 'DraftOptimizer.Core.dll', 'coreclr.dll', 'Data/current-patch.json')) {
+            if (!(Test-Path -LiteralPath (Join-Path 'artifacts/app' $file))) {
+              throw "Missing published file: $file"
+            }
+          }
+
+      - name: Package app
+        run: |
+          Compress-Archive -Path artifacts/app/* -DestinationPath artifacts/DraftOptimizer-win-x64.zip
+          $hash = (Get-FileHash artifacts/DraftOptimizer-win-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  DraftOptimizer-win-x64.zip" | Set-Content artifacts/DraftOptimizer-win-x64.zip.sha256 -Encoding ascii
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DraftOptimizer-win-x64
+          path: |
+            artifacts/DraftOptimizer-win-x64.zip
+            artifacts/DraftOptimizer-win-x64.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" > $null 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "$env:RELEASE_TAG" artifacts/DraftOptimizer-win-x64.zip artifacts/DraftOptimizer-win-x64.zip.sha256 --repo "$env:GITHUB_REPOSITORY" --clobber
+          } else {
+            $options = @('release', 'create', $env:RELEASE_TAG, 'artifacts/DraftOptimizer-win-x64.zip', 'artifacts/DraftOptimizer-win-x64.zip.sha256',
+              '--repo', $env:GITHUB_REPOSITORY, '--verify-tag', '--title', "DraftOptimizer $env:RELEASE_TAG", '--generate-notes')
+            if ($env:RELEASE_TAG.Contains('-')) { $options += '--prerelease' }
+            & gh @options
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
