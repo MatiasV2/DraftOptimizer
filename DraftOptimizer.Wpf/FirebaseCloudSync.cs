@@ -15,7 +15,7 @@ using System.Text.Json;
 
 namespace DraftOptimizer;
 
-internal sealed class FirebaseCloudSync : IDisposable
+internal sealed partial class FirebaseCloudSync : IDisposable
 {
     private const string ApiKey = "AIzaSyCxM-jtZNWBQmwcCsB8CfbY-mz4hNk1R7I";
     private const string ProjectId = "draftoptimizer";
@@ -106,6 +106,14 @@ internal sealed class FirebaseCloudSync : IDisposable
         UserId = root.TryGetProperty("user_id", out var userId) ? userId.GetString() : uid;
         _expiresAt = DateTimeOffset.UtcNow.AddSeconds(int.Parse(root.GetProperty("expires_in").GetString() ?? "3600"));
         if (root.TryGetProperty("email", out var emailValue)) Email = emailValue.GetString();
+        if (string.IsNullOrWhiteSpace(Email))
+        {
+            using var accountResponse = await _http.PostAsJsonAsync(
+                $"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={ApiKey}", new { idToken = _idToken }, ct);
+            accountResponse.EnsureSuccessStatusCode();
+            using var account = await JsonDocument.ParseAsync(await accountResponse.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
+            Email = account.RootElement.GetProperty("users")[0].GetProperty("email").GetString();
+        }
         if (!string.IsNullOrWhiteSpace(UserId) && !string.IsNullOrWhiteSpace(_refreshToken)) CredentialVault.Save(UserId, _refreshToken);
     }
 

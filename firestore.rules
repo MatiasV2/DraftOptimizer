@@ -2,6 +2,35 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Global statistics settings are edited through the Firebase console/Admin SDK.
+    match /config/statistics {
+      allow read: if true;
+      allow write: if false;
+    }
+    function datasetPublisher() {
+      return request.auth != null
+        && request.auth.token.email == 'matias.faundez@outlook.cl';
+    }
+    match /datasets/diamond-7-days {
+      allow read: if true;
+      allow create: if datasetPublisher()
+        && request.resource.data.publishedAt == request.time
+        && request.resource.data.tier == 'diamond_plus'
+        && request.resource.data.windowDays == 7;
+      allow update: if datasetPublisher()
+        && request.time >= resource.data.publishedAt + duration.value(24, 'h')
+        && request.resource.data.publishedAt == request.time
+        && request.resource.data.tier == 'diamond_plus'
+        && request.resource.data.windowDays == 7;
+      allow delete: if false;
+      match /chunks/{chunkId} {
+        allow read: if true;
+        allow create: if datasetPublisher()
+          && request.resource.data.data is bytes
+          && request.resource.data.data.size() <= 450000;
+        allow update, delete: if false;
+      }
+    }
     // Each Firebase account may access only documents beneath its own UID.
     match /users/{userId}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == userId;

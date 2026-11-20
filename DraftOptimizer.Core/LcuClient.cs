@@ -148,8 +148,7 @@ public sealed class LcuClient : IDisposable
         await SendAsync(HttpMethod.Patch, $"lol-champ-select/v1/session/actions/{pick.ActionId}", new { championId = pick.ChampionId, completed = pick.Complete }, ct);
         return true;
     }
-    public const int AutomaticBanWindowSeconds = 8;
-    public const int AutomaticBanWindowMilliseconds = AutomaticBanWindowSeconds * 1000;
+    public string AutomaticBanStatus { get; private set; } = "";
 
     public async Task<int?> AutomaticBanAsync(long gameId, int actionId, Role role, IReadOnlyList<int> priorities,
         Func<int, bool> stillEnabled, CancellationToken ct = default)
@@ -158,24 +157,43 @@ public sealed class LcuClient : IDisposable
         {
             var session = (await SendAsync(HttpMethod.Get, "lol-champ-select/v1/session", null, ct))
                 .Deserialize<DraftSession>(Json.Options);
-            if (session?.GameId != gameId || session.CurrentBan?.Id != actionId ||
-                session.Timer?.RemainingMilliseconds(DateTimeOffset.UtcNow) is not (> 0 and <= AutomaticBanWindowMilliseconds))
+            if (session?.GameId != gameId || session.CurrentBan?.Id != actionId)
+            {
+                AutomaticBanStatus = "League cambió la partida o la acción local de ban.";
                 return null;
-
+            }
+            if (session.Timer?.RemainingMilliseconds(DateTimeOffset.UtcNow) is not > 0)
+            {
+                AutomaticBanStatus = "League todavía no habilitó la fase de ban o su tiempo ya terminó.";
+                return null;
+            }
             var assigned = session.MyTeam.FirstOrDefault(player => player.CellId == session.LocalPlayerCellId)?.AssignedPosition;
-            return assigned != null && Roles.TryParse(assigned, out var assignedRole) && assignedRole != role
-                ? null
-                : session;
+            if (assigned != null && Roles.TryParse(assigned, out var assignedRole) && assignedRole != role)
+            {
+                AutomaticBanStatus = $"La posición asignada cambió de {role} a {assignedRole}.";
+                return null;
+            }
+            return session;
         }
 
         var bannable = await BannableAsync(ct);
         var draft = await ReadActiveBanAsync();
-        if (draft?.CurrentBan is not { ChampionId: 0 }) return null;
+        if (draft == null) return null;
+        if (draft.CurrentBan is not { ChampionId: 0 })
+        {
+            AutomaticBanStatus = "Ya existe una selección de ban en el cliente.";
+            return null;
+        }
 
         var unavailable = draft.Unavailable();
         var championId = priorities.FirstOrDefault(id => bannable.Contains(id) && !unavailable.Contains(id) &&
             !draft.AllyHasPickIntent(id) && stillEnabled(id));
-        if (championId <= 0) return null;
+        if (championId <= 0)
+        {
+            AutomaticBanStatus = "Prioridades descartadas · " + string.Join(", ", priorities.Select(id =>
+                $"{id}: {(!bannable.Contains(id) ? "League no permite banearlo" : unavailable.Contains(id) ? "seleccionado o baneado" : draft.AllyHasPickIntent(id) ? "preseleccionado por un aliado" : "automatización desactivada")}"));
+            return null;
+        }
 
         var path = $"lol-champ-select/v1/session/actions/{actionId}";
         await SendAsync(HttpMethod.Patch, path, new { championId, completed = false }, ct);
@@ -183,9 +201,18 @@ public sealed class LcuClient : IDisposable
         {
             if (attempt > 0) await Task.Delay(100, ct);
             var selected = await ReadActiveBanAsync();
-            if (selected?.CurrentBan is not { } action || !stillEnabled(championId) || selected.AllyHasPickIntent(championId)) return null;
+            if (selected?.CurrentBan is not { } action) return null;
+            if (!stillEnabled(championId) || selected.AllyHasPickIntent(championId))
+            {
+                AutomaticBanStatus = "Se desactivó la automatización o un aliado preseleccionó el campeón antes de confirmar.";
+                return null;
+            }
             if (action.ChampionId == 0) continue;
-            if (action.ChampionId != championId) return null;
+            if (action.ChampionId != championId)
+            {
+                AutomaticBanStatus = "La selección de ban cambió manualmente antes de confirmar.";
+                return null;
+            }
 
             await SendAsync(HttpMethod.Post, path + "/complete", null, ct);
             return championId;

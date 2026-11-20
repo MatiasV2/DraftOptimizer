@@ -4,6 +4,20 @@ static class ConfidenceTests
 {
     public static async Task RunAsync(Action<bool, string> check)
     {
+        try
+        {
+            WinrateConfidence.Configure(95);
+            var interval95 = WinrateConfidence.Wilson(50, 100);
+            check(Math.Abs(interval95.Lower - .4038315303659956) < 1e-10, "Configuración remota admite Wilson al 95%");
+            using var changing = new Dataset("""{"version":"test","date":"test","championData":{"103":{"id":"Ahri","name":"Ahri","statsByRole":{"2":{"games":1000,"wins":500}}}}}""");
+            double score95 = changing.Suggest(Role.Middle, null, null).Single().Score;
+            WinrateConfidence.Configure(99);
+            check(changing.Suggest(Role.Middle, null, null).Single().Score < score95,
+                "Cambiar confianza invalida las recomendaciones ya calculadas");
+            try { WinrateConfidence.Configure(100); check(false, "Rechaza porcentaje inválido"); }
+            catch (ArgumentOutOfRangeException) { check(WinrateConfidence.LevelPercent == 99, "Un valor inválido conserva la última confianza válida"); }
+        }
+        finally { WinrateConfidence.Configure(99); }
         var benchmark = WinrateConfidence.Wilson99(50, 100);
         check(Math.Abs(benchmark.Lower - .3752796250448398) < 1e-10 && Math.Abs(benchmark.Upper - .6247203749551602) < 1e-10, "Wilson 99% coincide con referencia numérica independiente");
         var none = WinrateConfidence.Wilson99(0, 100);

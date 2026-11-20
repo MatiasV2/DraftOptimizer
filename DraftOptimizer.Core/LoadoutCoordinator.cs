@@ -9,7 +9,6 @@ public sealed class LoadoutCoordinator : IDisposable
     private CancellationTokenSource? _cancellation;
     private Task? _preparation, _application;
     private BuildProfile? _ready;
-    private bool _failed;
     private string? _inputFingerprint;
     private static string Fingerprint(BuildProfile profile) => Json.Write(new { profile.Id, profile.Name, profile.ChampionId, profile.Role, profile.IsAram, profile.PrimaryStyleId, profile.SubStyleId, profile.Perks, profile.Spell1Id, profile.Spell2Id, profile.Blocks, profile.AssociatedMaps });
     public Task Pending => _application ?? _preparation ?? Task.CompletedTask;
@@ -18,7 +17,7 @@ public sealed class LoadoutCoordinator : IDisposable
     public void Reset()
     {
         _cancellation?.Cancel(); _cancellation?.Dispose(); _cancellation = null;
-        _key = null; _preparation = _application = null; _ready = null; _failed = false;
+        _key = null; _preparation = _application = null; _ready = null;
         _inputFingerprint = null;
     }
     public void Observe(ClientState state, Dataset data, Role fallbackRole, BuildProfile? selected, bool enabled,
@@ -37,27 +36,25 @@ public sealed class LoadoutCoordinator : IDisposable
         var assigned = draft.MyTeam.FirstOrDefault(p => p.CellId == draft.LocalPlayerCellId)?.AssignedPosition ?? "";
         var role = Roles.TryParse(assigned, out var actualRole) ? actualRole : fallbackRole;
         if (selected?.ChampionId != champion.Id || selected.Role != role || selected.IsAram != draft.IsAram) selected = null;
-        var fingerprint = selected == null ? "D2+" : Fingerprint(selected);
+        var fingerprint = selected == null ? "Diamante+" : Fingerprint(selected);
         if (_ready != null && selected != null && Fingerprint(_ready) == fingerprint) fingerprint = _inputFingerprint ?? fingerprint;
         var key = $"{draft.GameId}|{champion.Id}|{role}|{draft.IsAram}|{data.Patch}|{fingerprint}";
         if (_key != key)
         {
             Reset(); _key = key; _inputFingerprint = fingerprint; _cancellation = new();
             var token = _cancellation.Token;
-            _preparation = PrepareAsync(key, champion, role, draft.IsAram, selected == null ? null : Json.Read<BuildProfile>(Json.Write(selected)), data, fetch, token);
+            _preparation = PrepareAsync(key, champion, role, draft.IsAram, selected == null ? null : Json.Read<BuildProfile>(Json.Write(selected)), data, fetch, apply, new(draft.GameId, champion.Id, role, RequireFinalization: false), token);
         }
-        if (_ready != null && !_failed && _application == null)
-        {
-            var token = _cancellation!.Token;
-            _application = ApplyAsync(key, _ready, new(draft.GameId, champion.Id, role, RequireFinalization: false), apply, token);
-        }
+
     }
     private async Task PrepareAsync(string key, Champion champion, Role role, bool isAram, BuildProfile? selected, Dataset data,
-        Func<Champion, Role, string, bool, CancellationToken, Task<BuildProfile>> fetch, CancellationToken ct)
+        Func<Champion, Role, string, bool, CancellationToken, Task<BuildProfile>> fetch,
+        Func<BuildProfile, FinalLoadoutTarget, CancellationToken, Task> apply, FinalLoadoutTarget target, CancellationToken ct)
     {
+        using var lease = data.Retain();
         try
         {
-            Status = selected == null || selected.Perks.Length == 0 ? $"Preparando Lolalytics {(isAram ? "ARAM Emerald+" : "D2+")} para {champion.Name}…" : $"Preparando perfil {selected.Name} · {champion.Name} · {role}…";
+            Status = selected == null || selected.Perks.Length == 0 ? $"Preparando Lolalytics {(isAram ? "ARAM Emerald+" : "Diamante+")} para {champion.Name}…" : $"Preparando perfil {selected.Name} · {champion.Name} · {role}…";
             var result = selected;
             if (result == null || result.Perks.Length == 0)
             {
@@ -68,7 +65,7 @@ public sealed class LoadoutCoordinator : IDisposable
                 if (result == null)
                 {
                     result = automatic;
-                    var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"DraftOptimizer:{(isAram ? "ARAM" : "D2+")}:{champion.Id}:{role}"));
+                    var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"DraftOptimizer:{(isAram ? "ARAM" : "Diamante+")}:{champion.Id}:{role}"));
                     result.Id = new Guid(hash.AsSpan(0, 16)); result.Name = isAram ? $"{champion.Name} - ARAM" : $"{champion.Name} - {role}";
                 }
                 else
@@ -82,17 +79,18 @@ public sealed class LoadoutCoordinator : IDisposable
                         result.Spell1Id = automatic.Spell1Id;
                         result.Spell2Id = automatic.Spell2Id;
                     }
-                    result.Source += $" · {(addSpells ? "runas y hechizos" : "runas")} Lolalytics {(isAram ? "ARAM" : "D2+")}";
+                    result.Source += $" · {(addSpells ? "runas y hechizos" : "runas")} Lolalytics {(isAram ? "ARAM" : "Diamante+")}";
                 }
             }
             ct.ThrowIfCancellationRequested(); data.Validate(result);
             if (result.ChampionId != champion.Id || result.Role != role) throw new InvalidDataException("La configuración preparada corresponde a otro campeón o posición.");
             if (_key != key) return;
             _ready = result;
-            Status = $"Configuración lista: {result.Name} · {champion.Name}{(isAram ? " · ARAM" : $" · {role}")}. Se aplicará al campeón confirmado.";
+            _application = ApplyAsync(key, result, target, apply, ct);
+            await _application;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex) { if (_key == key) { _failed = true; Status = "No se pudo preparar la configuración: " + ex.Message + " Usa Reintentar configuración."; } }
+        catch (Exception ex) { if (_key == key) { Status = "No se pudo preparar la configuración: " + ex.Message + " Usa Reintentar configuración."; } }
     }
     private async Task ApplyAsync(string key, BuildProfile profile, FinalLoadoutTarget target,
         Func<BuildProfile, FinalLoadoutTarget, CancellationToken, Task> apply, CancellationToken ct)
@@ -104,7 +102,7 @@ public sealed class LoadoutCoordinator : IDisposable
             if (_key == key && !ct.IsCancellationRequested) Status = $"{(profile.Spell1Id == 0 ? "Runas y objetos" : "Hechizos, runas y objetos")} aplicados a League: {profile.Name}.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex) { if (_key == key) { _failed = true; Status = "No se completó la aplicación automática: " + ex.Message + " Usa Reintentar configuración."; } }
+        catch (Exception ex) { if (_key == key) { Status = "No se completó la aplicación automática: " + ex.Message + " Usa Reintentar configuración."; } }
     }
     public void Dispose() => Reset();
 }

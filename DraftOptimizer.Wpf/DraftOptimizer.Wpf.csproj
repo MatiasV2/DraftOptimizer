@@ -12,6 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="..\DraftOptimizer.Core\DraftOptimizer.Core.csproj" />
     <Resource Include="DraftOptimizer.ico" />
-    <Content Include="Data\current-patch.json" CopyToOutputDirectory="PreserveNewest" />
+    <Resource Include="DraftOptimizerIcon.png" />
+    <Content Include="Data\current-patch.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

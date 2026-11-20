@@ -143,12 +143,14 @@ try { await store.LoadAsync(); throw new Exception("FAIL: perfiles corruptos"); 
 if (args.Length > 0)
 {
     var html = await File.ReadAllTextAsync(args[0]);
-    var tier = args.Length > 1 && args[1] == "D2" ? LolalyticsProvider.DefaultTier : null;
+    var tier = args.Length > 1 && args[1] is "Diamond" or "D2" ? LolalyticsProvider.DefaultTier : null;
     var real = LolalyticsProvider.ParsePage(html, 103, Role.Middle, data.Patch, tier);
     Console.WriteLine(Json.Write(real));
     data.Validate(real); Check(real.Perks.Length == 9 && real.Blocks.Count >= 2, "Extracción de página REAL de Lolalytics y validación completa");
-    if (tier != null) Reject(() => LolalyticsProvider.ParsePage(html.Replace("d2_plus", "emerald_plus"), 103, Role.Middle, data.Patch, tier), "Rechaza una respuesta con otro rango en los filtros reales de Lolalytics");
+    if (tier != null) Reject(() => LolalyticsProvider.ParsePage(html.Replace("diamond_plus", "emerald_plus"), 103, Role.Middle, data.Patch, tier), "Rechaza una respuesta con otro rango en los filtros reales de Lolalytics");
 }
+await DiamondStatisticsTests.RunAsync(Check);
+await SharedDatasetTests.RunAsync(Check);
 await AutoDraftTests.RunAsync(Check);
 await ConfidenceTests.RunAsync(Check);
 DraftAnalysisTests.Run(Check);

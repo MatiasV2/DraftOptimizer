@@ -94,9 +94,12 @@ public sealed partial class MainWindow : Window
         await LoadProfileDataAsync(_directory);
         UpdateAutomationControls();
         _initializing = false;
+        await InitializeConfidenceAsync();
+        InitializeDatasetPublisher();
+        InitializeSharedDatasetReader();
         await RestoreFirebaseSessionAsync();
-        await LoadDataAsync();
         if (!_closed.IsCancellationRequested) { _timer.Start(); await PollAsync(); }
+        await LoadDataAsync();
     }
     private void Show(string title, string message, InfoBarSeverity severity = InfoBarSeverity.Informational)
     {
@@ -186,6 +189,8 @@ public sealed partial class MainWindow : Window
         else if (_data != null && ProfilesBox.SelectedItem is null) ProfilesBox.SelectedItem = _profiles.OrderByDescending(p => p.UpdatedAt).First();
         SetFirebaseUi();
         _cloudPollTimer.Start();
+        _ = PublishDailyDatasetAsync();
+        if (_data != null && !_firebase.CanPublishDataset) _ = LoadDataAsync();
     }
 
     private async Task ApplyCloudSnapshotAsync(CloudProfileSnapshot snapshot, bool persistLocally)
@@ -465,15 +470,9 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) { Show("No se pudo completar", ex.Message, InfoBarSeverity.Error); }
         finally { _busy = false; }
     }
-    private async Task LoadDataAsync()
+    private void BindCatalog(Dataset data)
     {
-        if (_loadingData) return;
-        _loadingData = true;
         _loadout.Reset();
-        try
-        {
-            var provider = new DatasetProvider(_http, Path.Combine(_directory, "cache"));
-            var (data, cached) = await provider.LoadAsync("current-patch", _closed.Token);
             BuildProfile? current = null;
             if (_data != null) { try { current = ReadProfile(); } catch { } }
             var old = _data; _data = data;
@@ -490,12 +489,42 @@ public sealed partial class MainWindow : Window
             UpdateFavoritesText();
             old?.Dispose(); RefreshSimulation();
             _ = ApplySpanishNamesAsync(data);
-            DataText.Text = $"Parche {data.Patch} · {data.Date} · {(cached ? "CACHÉ LOCAL" : "datos en línea")} · DraftGap / Lolalytics";
+    }
+    private async Task LoadDataAsync()
+    {
+        if (_loadingData) return;
+        _loadingData = true;
+        _loadout.Reset();
+        try
+        {
+            var provider = new DatasetProvider(_http, Path.Combine(_directory, "cache"));
+            var (catalog, _) = await provider.LoadAsync("current-patch", _closed.Token);
+            using var catalogLease = catalog;
+            if (_data == null)
+            {
+                var basic = System.Text.Json.Nodes.JsonNode.Parse(catalog.Root.GetRawText())!;
+                foreach (var champion in basic["championData"]!.AsObject())
+                    champion.Value!["statsByRole"] = new System.Text.Json.Nodes.JsonObject();
+                BindCatalog(new Dataset(basic.ToJsonString()));
+                await PollAsync();
+                DataText.Text = "Catálogo disponible · descargando estadísticas Diamante+…";
+            }
+            if (!_firebase.CanPublishDataset)
+            {
+                await ApplySharedDatasetAsync();
+                return;
+            }
+            _sharedDatasetVersion = null;
+            var statistics = new DiamondStatisticsProvider(_http, Path.Combine(_directory, "cache"));
+            var progress = new Progress<string>(message => DataText.Text = message);
+            var (data, cached) = await statistics.LoadAsync(catalog, "7-days", _closed.Token, progress);
+            BindCatalog(data);
+            DataText.Text = $"Estadísticas de los últimos 7 días · catálogo {data.Patch} · {data.Date} · {(cached ? "CACHÉ LOCAL" : "datos en línea")} · Lolalytics Diamante+";
             Show("Catálogo disponible", cached ? "Usando datos guardados; revisa la fecha antes de importar." : "Cargando estadísticas de enfrentamientos y sinergias…");
             RefreshSuggestions();
             try
             {
-                var (context, contextCached) = await provider.LoadAsync("30-days", _closed.Token);
+                var (context, contextCached) = await statistics.LoadAsync(catalog, "30-days", _closed.Token, progress);
                 _context?.Dispose(); _context = context;
                 DataText.Text += $" · contexto 30 días {context.Date}{(contextCached ? " (caché)" : "")}";
                 RefreshSuggestions(); RefreshSimulation();
@@ -504,7 +533,7 @@ public sealed partial class MainWindow : Window
             catch (Exception ex) when (ex is not OperationCanceledException)
             { Show("Catálogo disponible sin contexto", "El orden usa solo estadísticas base. " + ex.Message, InfoBarSeverity.Warning); }
         }
-        catch (Exception ex) { Show("No se pudo cargar el catálogo", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { Show(_data == null ? "No se pudo cargar el catálogo" : "Estadísticas Diamante+ pendientes", ex.Message, InfoBarSeverity.Error); }
         finally { _initializing = false; _loadingData = false; }
     }
     private async Task PollAsync(bool allowWhileBusy = false)
@@ -522,8 +551,9 @@ public sealed partial class MainWindow : Window
             var state = await _lcu.StateAsync(_closed.Token);
             _draft = state.Draft;
             SetAramRoleMode(_draft?.IsAram == true);
+            AdvanceLoadout(state);
             if (_draft?.CurrentBan != null && !_draft.IsAram) await AdvanceBanAsync();
-            _pickable = _draft == null || _draft.IsFinalization || _draft.IsAram ? null : await _lcu.PickableAsync(_closed.Token);
+            _pickable = _draft == null || _draft.IsFinalization || _draft.IsAram || _draft.LocalLockedChampion > 0 ? null : await _lcu.PickableAsync(_closed.Token);
             ConnectionText.Text = "● League conectado · " + state.Phase;
             _timer.Interval = _draft == null ? TimeSpan.FromSeconds(2) : TimeSpan.FromMilliseconds(_draft.CurrentPick == null && _draft.CurrentBan == null ? 500 : 200);
             var remaining = _draft?.Timer?.RemainingMilliseconds(DateTimeOffset.UtcNow);
@@ -546,7 +576,6 @@ public sealed partial class MainWindow : Window
                 AutomationText.Text = "ARAM: selección automática desactivada; usa los cambios disponibles en el banco.";
             }
             else if (_draft?.CurrentBan == null) { _autoBanAttempted = null; await AdvanceAutomationAsync(); }
-            AdvanceLoadout(state);
         }
         catch (Exception) when (!_closed.IsCancellationRequested)
         {
@@ -608,7 +637,7 @@ public sealed partial class MainWindow : Window
                 }
                 if (version != _suggestionsVersion || cancellation.IsCancellationRequested || !ReferenceEquals(data, _data)) return;
                 TeamsText.Text = "ARAM · estadísticas globales de ARAM; el puntaje usa WR y partidas de ARAM. No se aplican cruces de líneas.";
-                SetDraftSummary("Las recomendaciones se ordenan con datos de ARAM de Lolalytics (Emerald+), usando confianza Wilson al 99%.");
+                SetDraftSummary($"Las recomendaciones se ordenan con datos de ARAM de Lolalytics (Emerald+), usando confianza Wilson al {WinrateConfidence.LevelLabel}.");
                 if (!statErrors.IsEmpty && candidates.All(c => !_aramStats.ContainsKey((data.Patch, c.Id))))
                     Show("Estadísticas ARAM no disponibles", statErrors.TryPeek(out var message) ? message : "No se recibieron datos de winrate.", InfoBarSeverity.Warning);
                 var aramConfidence = ConfidencePlacement.RankSuggestions(candidates
@@ -676,21 +705,12 @@ public sealed partial class MainWindow : Window
     private void SetAramRoleMode(bool isAram)
     {
         if (_aramRoleMode == isAram) return;
-        if (isAram)
-        {
-            if (RoleBox.SelectedItem is Role currentRole) _roleBeforeAram = currentRole;
-            _aramRoleMode = true;
-            RoleBox.ItemsSource = new[] { "ARAM" };
-            RoleBox.SelectedItem = "ARAM";
-            RoleBox.IsEnabled = false;
-        }
-        else
-        {
-            _aramRoleMode = false;
-            RoleBox.ItemsSource = Enum.GetValues<Role>();
-            RoleBox.SelectedItem = _roleBeforeAram;
-            RoleBox.IsEnabled = true;
-        }
+        if (isAram && RoleBox.SelectedItem is Role currentRole) _roleBeforeAram = currentRole;
+        _aramRoleMode = isAram;
+        RoleBox.IsEnabled = !isAram;
+        RoleBox.ToolTip = isAram ? "ARAM · selección de línea deshabilitada" : "Selecciona una línea";
+        UpdateDraftBuildOptionsForSelection();
+        UpdateLoadoutPreview();
         _lastSuggestions = null;
         UpdateFavoritesText();
         RefreshSuggestions();
@@ -1272,11 +1292,6 @@ public sealed partial class MainWindow : Window
             BanStatusText.Text = $"Se agotó el tiempo del baneo · {role}.";
             return;
         }
-        if (remaining > LcuClient.AutomaticBanWindowMilliseconds)
-        {
-            BanStatusText.Text = $"Turno de ban · {role}. Se fijará en los últimos {LcuClient.AutomaticBanWindowSeconds} segundos.";
-            return;
-        }
         try
         {
             var championId = await _lcu.AutomaticBanAsync(draft.GameId, action.Id, role, priorities.ToArray(),
@@ -1284,7 +1299,7 @@ public sealed partial class MainWindow : Window
                     _favorites.BanPrioritiesFor(role).Contains(id), _closed.Token);
             if (championId is not { } banned)
             {
-                BanStatusText.Text = $"Sin baneo automático · {role}. El turno o la disponibilidad de las prioridades cambió.";
+                BanStatusText.Text = $"Baneo pendiente · {role}. {_lcu.AutomaticBanStatus}";
                 return;
             }
             _autoBanAttempted = turn;
@@ -1321,7 +1336,7 @@ public sealed partial class MainWindow : Window
     }
     private void AdvanceLoadout(ClientState state)
     {
-        if (_data == null || _loadingData || _busy) return;
+        if (_data == null || _busy) return;
         try
         {
             BuildProfile? profile = null;

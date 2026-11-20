@@ -121,7 +121,7 @@ public sealed partial class MainWindow
         var data = _data;
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_closed.Token);
         _draftBuildOptionsCancellation = cancellation;
-        if (_personalBuildButtons.Count == 0) BuildOptionsStatus.Text = "Cargando runas y builds de Lolalytics D2+…";
+        if (_personalBuildButtons.Count == 0) BuildOptionsStatus.Text = "Cargando runas y builds de Lolalytics Diamante+…";
         try
         {
             var options = await new LolalyticsProvider(_http).GetOptionsAsync(champion, role, data.Patch, cancellation.Token);

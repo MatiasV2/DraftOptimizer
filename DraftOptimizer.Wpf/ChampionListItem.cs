@@ -53,9 +53,9 @@ public sealed class ChampionListItem : INotifyPropertyChanged
     public string FavoriteStar => IsFavorite ? "★" : "☆";
     public string FavoriteAction => $"{(IsFavorite ? "Quitar" : "Añadir")} {Champion.Name} {(IsFavorite ? "de" : "a")} favoritos de {Role}";
     public string Label => !Available ? "No disponible en el draft actual" : Recommendation is { UsesGlobalConfidence: true, IsAram: true } aram
-        ? $"WR ARAM {aram.BaseWinrate:P1} · {aram.Games:N0} partidas · confianza {aram.Score:F1}\nLolalytics Emerald+ · Wilson 99% {aram.ConfidenceInterval.Lower:P1}–{aram.ConfidenceInterval.Upper:P1}"
+        ? $"WR ARAM {aram.BaseWinrate:P1} · {aram.Games:N0} partidas · confianza {aram.Score:F1}\nLolalytics Emerald+ · Wilson {WinrateConfidence.LevelLabel} {aram.ConfidenceInterval.Lower:P1}–{aram.ConfidenceInterval.Upper:P1}"
         : Recommendation is { UsesGlobalConfidence: true } global
-        ? $"WR del rol {global.BaseWinrate:P1} · {global.Games:N0} partidas del rol · confianza global {global.Score:F1}\n{Role} · rango Wilson 99% {global.ConfidenceInterval.Lower:P1}–{global.ConfidenceInterval.Upper:P1} · sin picks"
+        ? $"WR del rol {global.BaseWinrate:P1} · {global.Games:N0} partidas del rol · confianza global {global.Score:F1}\n{Role} · rango Wilson {WinrateConfidence.LevelLabel} {global.ConfidenceInterval.Lower:P1}–{global.ConfidenceInterval.Upper:P1} · sin picks"
         : Recommendation is { } stats
         ? $"WR draft {(stats.DraftWinrate.HasValue ? stats.DraftWinrate.Value.ToString("P1") : "—")} · confianza {(stats.HasDraftConfidence ? stats.Score.ToString("F1") : "—")}\nRango del draft {(stats.HasDraftConfidence ? $"{stats.ConfidenceInterval.Lower:P1}–{stats.ConfidenceInterval.Upper:P1}" : "sin draft/contexto")} · {stats.ContextSamples} pares · WR base {stats.BaseWinrate:P1}"
         : "Sin estadísticas suficientes para calcular confianza";

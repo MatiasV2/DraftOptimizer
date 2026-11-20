@@ -7,7 +7,7 @@ namespace DraftOptimizer.Core;
 
 public sealed class LolalyticsProvider(HttpClient http)
 {
-    public const string DefaultTier = "d2_plus";
+    public const string DefaultTier = "diamond_plus";
     public const string AramTier = "emerald_plus";
     public static string PageUrl(Champion champion, Role role, string patch) =>
         $"https://lolalytics.com/lol/{champion.Slug}/build/?lane={role.ToString().ToLowerInvariant()}&tier={DefaultTier}&region=all&patch={Uri.EscapeDataString(string.Join('.', patch.Split('.').Take(2)))}";
@@ -51,7 +51,7 @@ public sealed class LolalyticsProvider(HttpClient http)
         if (!winrate.Success || !double.TryParse(winrate.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var wr) || games <= 0)
             throw new InvalidDataException($"Lolalytics no entregó estadísticas ARAM legibles para {champion.Name}.");
         var rate = wr / 100d;
-        var interval = WinrateConfidence.Wilson99(rate * games, games);
+        var interval = WinrateConfidence.Wilson(rate * games, games);
         return new(champion, rate, games, interval.Lower * 100, 0) { GlobalConfidenceInterval = interval, IsAram = true };
     }
     public static BuildProfile ParsePage(string html, int championId, Role role, string patch, string? expectedTier = null, bool isAram = false)
@@ -120,7 +120,7 @@ public sealed class LolalyticsProvider(HttpClient http)
                 obj.TryGetProperty("region", out var r) && obj.TryGetProperty("patch", out var p) && obj.TryGetProperty("lane", out var l) &&
                 Reference(t, 0)?.ToString() == expectedTier && Reference(r, 0)?.ToString() == "all" &&
                 Reference(p, 0)?.ToString() == expectedPatch && Reference(l, 0)?.ToString() == expectedLane);
-            if (!matched) throw new InvalidDataException("Lolalytics no confirmó los filtros D2+, región, posición y parche solicitados.");
+            if (!matched) throw new InvalidDataException("Lolalytics no confirmó los filtros Diamante+, región, posición y parche solicitados.");
         }
         if (expectedTier != null && !isAram && !raw.TryGetProperty("item1", out _)) throw new InvalidDataException("Lolalytics no proporcionó muestras por posición de compra para calcular la confianza.");
         var details = new JsonObject();
@@ -145,7 +145,7 @@ public sealed class LolalyticsProvider(HttpClient http)
             var runeStats = Stats(data["runes"]);
             var coreStats = Stats(data["items"]?["core"]);
             if (runeStats == null && coreStats == null) throw new InvalidDataException($"Lolalytics no entregó winrate y partidas para {label}.");
-            WinrateInterval? RuneInterval((double Rate, int Games)? stats) => stats is { } value ? WinrateConfidence.Wilson99(value.Rate * value.Games, value.Games) : null;
+            WinrateInterval? RuneInterval((double Rate, int Games)? stats) => stats is { } value ? WinrateConfidence.Wilson(value.Rate * value.Games, value.Games) : null;
             var runeConfidence = RuneInterval(runeStats);
             var buildConfidence = RuneInterval(coreStats);
             var score = new[] { runeConfidence?.Lower, buildConfidence?.Lower }.Where(x => x.HasValue).Min()!.Value;
@@ -187,7 +187,9 @@ public sealed class LolalyticsProvider(HttpClient http)
         }
         void AddRanked(string slot, string title, JsonNode? candidates)
         {
-            var ranked = BuildItemConfidence.Rank(slot, Observations(candidates), fillFromSmallSamples: true);
+            var observations = Observations(candidates)
+                .Where(candidate => slot != "boots" || candidate.Id != 9999);
+            var ranked = BuildItemConfidence.Rank(slot, observations, fillFromSmallSamples: true);
             if (ranked.Count == 0) return;
             evidence.AddRange(ranked.Where(x => x.Games >= BuildItemConfidence.MinimumGames));
             blocks.Add(new() { Name = title, Items = ranked.Select(x => x.ItemId).ToArray() });
@@ -239,13 +241,13 @@ public sealed class LolalyticsProvider(HttpClient http)
             ?? (0, 0);
         return new BuildProfile
         {
-            Name = isAram ? "Lolalytics · ARAM" : $"Lolalytics · {role}", ChampionId = championId, Role = role, IsAram = isAram,
+            Name = isAram ? $"Lolalytics · ARAM" : $"Lolalytics · {role}", ChampionId = championId, Role = role, IsAram = isAram,
             PrimaryStyleId = StyleId(runes["page"]!["pri"]!), SubStyleId = StyleId(runes["page"]!["sec"]!),
             Perks = Values(set["pri"]).Concat(Values(set["sec"])).Concat(Values(set["mod"])).ToArray(),
             Spell1Id = spell1Id, Spell2Id = spell2Id,
             EarlySkills = early, SkillPriority = priority, ItemEvidence = evidence,
             Blocks = blocks.Where(b => b.Items.Length > 0).ToList(), AssociatedMaps = isAram ? [12] : [11],
-            Source = hasPositions ? (isAram ? "Lolalytics · ARAM · Emerald+ · Global · Wilson 99% · confianza visible desde 200 partidas" : "Lolalytics · D2+ · Global · Solo/Duo · Wilson 99% · confianza visible desde 200 partidas · mínimo 4 alternativas por posición si hay datos suficientes y hasta 2 inicios") : "Lolalytics · núcleo popular · sin muestras por posición", Patch = patch
+            Source = hasPositions ? (isAram ? $"Lolalytics · ARAM · Emerald+ · Global · Wilson {WinrateConfidence.LevelLabel} · confianza visible desde 200 partidas" : $"Lolalytics · Diamante+ · Global · Solo/Duo · Wilson {WinrateConfidence.LevelLabel} · confianza visible desde 200 partidas · mínimo 4 alternativas por posición si hay datos suficientes y hasta 2 inicios") : "Lolalytics · núcleo popular · sin muestras por posición", Patch = patch
         };
     }
 

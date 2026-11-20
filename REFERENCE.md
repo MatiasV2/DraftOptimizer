@@ -9,4 +9,7 @@
 - Se ejecutaron las funciones TypeScript originales sobre los datasets públicos de parche actual y 30 días para producir los resultados de referencia en `DraftOptimizer.Tests/Fixtures/DraftGapParity.json`. Se eliminaron únicamente campeones y pares que no participaban en esos escenarios. El código C# coincide con las cuatro estimaciones con tolerancia `1e-10`.
 - Se incluye el aviso MIT del origen en `LICENSE.DraftGap`.
 - La incertidumbre propagada del draft y su límite conservador de ranking son propios; no forman parte de la estimación puntual del código original. Se verificó que las cuatro estimaciones puntuales de referencia permanecen iguales.
-- Builds y runas automáticas usan la página pública de Lolalytics con filtro `tier=d2_plus`, Global, Solo/Duo y parche/posición solicitados. Se contrastó con una página real de Ahri/middle D2+ del parche 16.22 y se verifica el objeto de filtros Qwik de la respuesta.
+- Builds y runas automáticas usan la página pública de Lolalytics con filtro `tier=diamond_plus`, Global, Solo/Duo y parche/posición solicitados. Se contrastó con una página real de Ahri/middle Diamante+ del parche 16.22 y se verifica el objeto de filtros Qwik de la respuesta.
+
+- La fuente de estadísticas del ranking se sustituyó por Lolalytics diamond_plus para el parche y 30 días. Se reutiliza el catálogo estático de DraftGap y se conserva su normalización del sesgo de rango.
+- Se contrastaron respuestas reales de Ahri middle y top en diamond_plus del parche 16.22 y de Ahri middle en 30 días. También se verificó la integración de sinergias del endpoint build-team.

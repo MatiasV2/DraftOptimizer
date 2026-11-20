@@ -92,16 +92,19 @@ static class AutoDraftTests
         await new AutoDraftController().TickAsync(allyData, allyData, allyDraft, [103, 238], settings, Role.Middle, now, request => { allyWrites.Add(request); return Task.FromResult(true); });
         check(allyWrites.Single().ChampionId == 238, "Sinergia con aliado utility modifica la prioridad entre favoritos");
 
-        var banHandler = new FakeLeague { RemainingMs = 4170, ChampionId = 0, ActionType = "ban", Available = [103, 238], AllyIntent = 103 };
+        var banHandler = new FakeLeague { RemainingMs = 20000, ChampionId = 0, ActionType = "ban", Available = [103, 238], AllyIntent = 103 };
         using var banLcu = new LcuClient(new HttpClient(banHandler) { BaseAddress = new Uri("https://127.0.0.1:29999/") });
         var favoritesFromClient = await banLcu.ReadFavoritesAsync();
         check(favoritesFromClient.Count == 2 && favoritesFromClient[Role.Middle].SetEquals([103, 238]) && favoritesFromClient[Role.Support].SetEquals([103]),
             "Importa favoritos por posición, incluida Utility, sin duplicados");
+        var unavailableBan = await banLcu.AutomaticBanAsync(700, 9, Role.Middle, [99], _ => true);
+        check(unavailableBan == null && banHandler.Writes.Count == 0 && banLcu.AutomaticBanStatus.Contains("League no permite banearlo"),
+            "El estado identifica cuándo League descarta todos los campeones prioritarios");
         var banned = await banLcu.AutomaticBanAsync(700, 9, Role.Middle, [99, 103, 238], _ => true);
         check(banned == 238 && banHandler.Writes.Count == 2 &&
             banHandler.Writes[0].Method == "PATCH" && banHandler.Writes[0].Body["championId"]!.GetValue<int>() == 238 &&
             banHandler.Writes[1] is { Method: "POST", Path: "/lol-champ-select/v1/session/actions/9/complete" },
-            "Con 4,17 segundos selecciona y confirma el ban, protegiendo al aliado y omitiendo candidatos no disponibles");
+            "Al comenzar el turno selecciona y confirma el ban, protegiendo al aliado y omitiendo candidatos no disponibles");
         banHandler.OnPickable = () => banHandler.HoveredChampion = 103;
         banned = await banLcu.AutomaticBanAsync(700, 9, Role.Middle, [238], _ => true);
         check(banned == null && banHandler.Writes.Count == 2, "Respeta una selección manual posterior a la consulta de disponibilidad");

@@ -62,7 +62,7 @@ public sealed class DraftAnalyzer(Dataset data, Dataset context)
             variance += pair.Variance;
             if (pair.Evidence) { matchups++; evidence.Add(pair.Games); }
         }
-        double margin = WinrateConfidence.Z99 * Math.Sqrt(variance);
+        double margin = WinrateConfidence.Z * Math.Sqrt(variance);
         return new(ToWinrate(rating), matchups, duos, allies.InferredRoles.Count + enemies.InferredRoles.Count, allies.Picks.Count, enemies.Picks.Count)
         {
             HasConfidence = evidence.Count > 0,

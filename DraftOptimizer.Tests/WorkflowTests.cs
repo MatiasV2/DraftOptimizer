@@ -44,7 +44,7 @@ static class WorkflowTests
         loadout.Reset(); applies = fetches = 0;
         loadout.Observe(new("ChampSelect", Draft()), data, Role.Middle, null, true, Fetch, Apply); await loadout.Pending;
         var automaticId = loadout.Prepared!.Id;
-        check(fetches == 1 && applies == 1, "Sin perfil se prepara y aplica D2+ al campeón confirmado");
+        check(fetches == 1 && applies == 1, "Sin perfil se prepara y aplica Diamante+ al campeón confirmado");
         loadout.Observe(new("ChampSelect", Draft(true)), data, Role.Middle, null, true, Fetch, Apply); await loadout.Pending;
         check(applies == 1 && loadout.Status.Contains("aplicados"), "Fallback preparado se aplica al finalizar el draft");
         loadout.Observe(new("ChampSelect", Draft(true)), data, Role.Middle, loadout.Prepared, true, Fetch, Apply); await loadout.Pending;
@@ -57,7 +57,7 @@ static class WorkflowTests
         personal.Spell1Id = 4; personal.Spell2Id = 14;
         var originalItems = itemsOnly.Blocks.SelectMany(x => x.Items).ToArray();
         loadout.Observe(new("ChampSelect", Draft()), data, Role.Middle, itemsOnly, true, Fetch, Apply); await loadout.Pending;
-        check(loadout.Prepared!.Perks.Length == 9 && loadout.Prepared.Blocks.SelectMany(x => x.Items).SequenceEqual(originalItems), "Perfil solo de objetos conserva sus compras y completa runas desde D2+");
+        check(loadout.Prepared!.Perks.Length == 9 && loadout.Prepared.Blocks.SelectMany(x => x.Items).SequenceEqual(originalItems), "Perfil solo de objetos conserva sus compras y completa runas desde Diamante+");
         check(loadout.Prepared!.SpellsFor(FlashKey.F) == (14, 4) && itemsOnly.Spell1Id == 0,
             "La búsqueda que completa las runas también trae hechizos para un perfil de objetos");
         loadout.Reset();
@@ -83,6 +83,38 @@ static class WorkflowTests
         var completed = Draft(); completed.TheirTeam.Add(new() { CellId = 5, ChampionId = 80 }); completed.Actions[0].Add(new() { ActorCellId = 5, Type = "pick", ChampionId = 80, Completed = true });
         check(completed.IsFinalization, "Todos los picks completados identifican el cierre aunque el temporizador aún no cambie");
 
+        var lateHandler = new FakeLeague { Completed = true, InProgress = false, ChampionId = 103 };
+        using var lateLcu = new LcuClient(new HttpClient(lateHandler) { BaseAddress = new Uri("https://127.0.0.1:29999/") });
+        using var lateController = new LoadoutCoordinator();
+        var lateBuild = Json.Read<BuildProfile>(Json.Write(personal));
+        lateBuild.Spell1Id = 4; lateBuild.Spell2Id = 14;
+        var lateFetch = new TaskCompletionSource<BuildProfile>(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task ApplyLate(BuildProfile profile, FinalLoadoutTarget target, CancellationToken ct)
+        {
+            await lateLcu.ImportRunesAsync(profile, data, ct, target);
+            await lateLcu.ImportItemsAsync(profile, data, ct, target);
+            await lateLcu.ImportSummonerSpellsAsync(profile, data, ct, target, FlashKey.F);
+        }
+        lateController.Observe(new("ChampSelect", Draft()), data, Role.Middle, null, true,
+            (_, _, _, _, _) => lateFetch.Task, ApplyLate);
+        var pendingLateImport = lateController.Pending;
+        lateFetch.SetResult(lateBuild);
+        await pendingLateImport;
+        check(lateHandler.Writes.Count == 3 &&
+            lateHandler.Writes.Any(write => write.Path.EndsWith("/pages/42")) &&
+            lateHandler.Writes.Any(write => write.Path.EndsWith("/sets")) &&
+            lateHandler.Writes.Any(write => write.Path.EndsWith("/my-selection") && write.Body["spell2Id"]!.GetValue<int>() == 4),
+            "Abrir después del lock-in aplica runas, objetos y hechizos al terminar la descarga sin esperar otro sondeo");
+        lateController.Observe(new("ChampSelect", Draft()), data, Role.Middle, null, true,
+            (_, _, _, _, _) => throw new Exception("Descarga duplicada"), ApplyLate);
+        await lateController.Pending;
+        check(lateHandler.Writes.Count == 3, "El sondeo posterior al arranque no repite la importación ya completada");
+        lateController.Reset();
+        lateController.Observe(new("ChampSelect", Draft(true)), data, Role.Middle, lateBuild, true,
+            (_, _, _, _, _) => throw new Exception("Perfil personal ignorado"), ApplyLate);
+        await lateController.Pending;
+        check(lateHandler.Writes.Count == 6, "Abrir durante finalización vuelve a importar el perfil personal de la partida");
+
         var handler = new FakeLeague { RemainingMs = 3000, TimerPhase = "FINALIZATION", Completed = true };
         using var lcu = new LcuClient(new HttpClient(handler) { BaseAddress = new Uri("https://127.0.0.1:29999/") });
         var target = new FinalLoadoutTarget(700, 103, Role.Middle);
@@ -97,7 +129,7 @@ static class WorkflowTests
         handler.TimerPhase = "FINALIZATION"; handler.OnPages = () => handler.Phase = "GameStart";
         try { await lcu.ImportRunesAsync(personal, data, target: target); } catch (InvalidOperationException) { }
         check(handler.Writes.Count == writes, "Revalidación justo antes de escribir cancela importación si comenzó la partida");
-        check(LolalyticsProvider.PageUrl(new(103, "Ahri", "Ahri"), Role.Middle, data.Patch).Contains("tier=d2_plus"), "Proveedor manual y automático solicitan D2+ explícitamente");
+        check(LolalyticsProvider.PageUrl(new(103, "Ahri", "Ahri"), Role.Middle, data.Patch).Contains("tier=diamond_plus"), "Proveedor manual y automático solicitan Diamante+ explícitamente");
 
         JsonObject Stats(int n, double p) => new() { ["games"] = n, ["wins"] = n * p, ["matchup"] = new JsonObject(), ["synergy"] = new JsonObject() };
         Dataset Evidence(int pairs, double p) => new(new JsonObject { ["version"] = "16.22", ["date"] = "test", ["championData"] = new JsonObject

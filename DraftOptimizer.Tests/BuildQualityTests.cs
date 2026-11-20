@@ -17,6 +17,15 @@ static class BuildQualityTests
         var fixture = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"Fixtures","LolalyticsBuildD2.json")))!;
         var profile = LolalyticsProvider.ParseSummary(fixture["summary"]!,103,Role.Middle,"16.22",fixture["details"]);
         data.Validate(profile);
+        var noBootsDetails = fixture["details"]!.DeepClone();
+        noBootsDetails["boots"]!.AsArray().Insert(0, JsonNode.Parse("[9999,99,0,10000]"));
+        var noBoots = LolalyticsProvider.ParseSummary(fixture["summary"]!, 103, Role.Middle, "16.22", noBootsDetails);
+        data.Validate(noBoots);
+        check(noBoots.Blocks.SelectMany(block => block.Items).All(id => id != 9999) &&
+            noBoots.ItemEvidence.All(item => item.ItemId != 9999) &&
+            noBoots.Perks.SequenceEqual(profile.Perks) &&
+            noBoots.Blocks.Single(block => block.Name == "Botas").Items.Length >= profile.Blocks.Single(block => block.Name == "Botas").Items.Length,
+            "La alternativa 9999 de botas no bloquea runas ni desplaza las botas reales de la build");
         check(profile.EarlySkills.SequenceEqual(["W","Q","E"]) && profile.SkillPriority.SequenceEqual(["Q","W","E"]), "Datos D2+ reales distinguen habilidades de nivel 1–3 de prioridad de maxeo");
         check(profile.Blocks[0].Name.Contains("lvl1 W / lvl2 Q / lvl3 E") && profile.Blocks[0].Items.Count(x => x == 2003) == 2, "Título inicial contiene habilidades y conserva cantidades de consumibles");
         check(Enumerable.Range(1,3).All(i => profile.Blocks.Any(b => b.Name.StartsWith($"Objeto {i} · maxear {profile.SkillPriority[i-1]}"))), "Primeros tres objetos muestran prioridad de maxeo correspondiente");

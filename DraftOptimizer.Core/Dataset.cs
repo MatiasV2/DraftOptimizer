@@ -23,7 +23,7 @@ public sealed class Dataset : IDisposable
     private string? _suggestionCacheKey;
     private Dataset? _suggestionCacheContext;
     private List<Suggestion>? _suggestionCache;
-    private readonly Dictionary<Role, IReadOnlyDictionary<int, ConfidencePlacement>> _globalConfidenceByRole = [];
+    private readonly Dictionary<(Role, double), IReadOnlyDictionary<int, ConfidencePlacement>> _globalConfidenceByRole = [];
     private IReadOnlyDictionary<(string Table, int Id), string> _localizedNames = new Dictionary<(string, int), string>();
     public Dataset(string text) : this(JsonDocument.Parse(text)) { }
     private Dataset(JsonDocument document)
@@ -140,10 +140,10 @@ public sealed class Dataset : IDisposable
         lock (_suggestionLock)
         {
             ct.ThrowIfCancellationRequested();
-            if (!_globalConfidenceByRole.TryGetValue(role, out var placements))
+            if (!_globalConfidenceByRole.TryGetValue((role, WinrateConfidence.LevelPercent), out var placements))
             {
                 placements = ConfidencePlacement.RankSuggestions(SuggestCore(role, null, null, null, true, ct));
-                _globalConfidenceByRole.Add(role, placements);
+                _globalConfidenceByRole.Add((role, WinrateConfidence.LevelPercent), placements);
             }
             return placements;
         }
@@ -154,7 +154,7 @@ public sealed class Dataset : IDisposable
         // Timer ticks do not alter the composition. Picks, intents, roles, bans/actions
         // and availability all participate in the key, including in-place mutations.
         var draftKey = draft == null ? "" : Json.Write(new { draft.GameId, draft.LocalPlayerCellId, draft.MyTeam, draft.TheirTeam, draft.Actions, Phase = draft.Timer?.Phase });
-        var cacheKey = $"{role}|{includeLocalSelection}|{draftKey}|{(pickable == null ? "all" : string.Join(',', pickable.OrderBy(x => x)))}";
+        var cacheKey = $"{WinrateConfidence.LevelPercent}|{role}|{includeLocalSelection}|{draftKey}|{(pickable == null ? "all" : string.Join(',', pickable.OrderBy(x => x)))}";
         if (_suggestionCacheKey == cacheKey && ReferenceEquals(context, _suggestionCacheContext) && _suggestionCache != null) return [.. _suggestionCache];
         var excluded = draft?.Unavailable(includeLocalSelection) ?? [];
         var result = new List<Suggestion>();
@@ -176,7 +176,7 @@ public sealed class Dataset : IDisposable
             if (!double.IsFinite(wins) || wins < 0 || wins > games) continue;
             var wr = wins / games;
             var analysis = analyzer?.Analyze(composition!.Allies.WithCandidate(role, c.Id), composition.Enemies);
-            WinrateInterval? initial = global ? WinrateConfidence.Wilson99(wins, games) : null;
+            WinrateInterval? initial = global ? WinrateConfidence.Wilson(wins, games) : null;
             double score = initial.HasValue ? initial.Value.Lower * 100 : analysis?.HasConfidence == true ? analysis.ConfidenceLower * 100 : 0;
             int pairs = analysis == null ? 0 : analysis.MatchupPairs + analysis.SynergyPairs;
             result.Add(new(c, wr, games, score, pairs) { DraftAnalysis = analysis, GlobalConfidenceInterval = initial });

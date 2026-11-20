@@ -85,7 +85,7 @@
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition />
           </Grid.ColumnDefinitions>
-          <Image Source="{StaticResource BrandLogo}" Width="48" Height="48" VerticalAlignment="Center" />
+          <Image Source="DraftOptimizerIcon.png" Width="48" Height="48" VerticalAlignment="Center" />
           <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
             <TextBlock Text="DRAFT OPTIMIZER" FontSize="21" FontWeight="Bold" />
             <TextBlock Text="Elige con confianza. Prepara tu partida." Foreground="#A6B5C9" FontSize="13" Margin="0,5,0,0" />
@@ -129,8 +129,79 @@
                 <ColumnDefinition />
               </Grid.ColumnDefinitions>
               <StackPanel Margin="0,3,8,3">
-                <TextBlock Text="Línea / modo" Margin="0,0,0,3" />
-                <ComboBox x:Name="RoleBox" SelectionChanged="FiltersChanged" AutomationProperties.Name="Línea / modo" Margin="0,5,0,0" />
+                <TextBlock Text="Línea" Margin="0,0,0,3" />
+                <ListBox x:Name="RoleBox" SelectionChanged="FiltersChanged" AutomationProperties.Name="Línea"
+                         Background="Transparent" BorderThickness="0" Padding="0" Margin="0,5,0,0"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                  <ListBox.Template>
+                    <ControlTemplate TargetType="ListBox">
+                      <Border Background="Transparent"><ItemsPresenter /></Border>
+                    </ControlTemplate>
+                  </ListBox.Template>
+                  <ListBox.ItemsPanel>
+                    <ItemsPanelTemplate><UniformGrid Rows="1" Columns="5" /></ItemsPanelTemplate>
+                  </ListBox.ItemsPanel>
+                  <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                      <Setter Property="ToolTip" Value="{Binding}" />
+                      <Setter Property="AutomationProperties.Name" Value="{Binding}" />
+                      <Setter Property="Foreground" Value="#A6B5C9" />
+                      <Setter Property="Background" Value="#111D2A" />
+                      <Setter Property="BorderBrush" Value="#29384B" />
+                      <Setter Property="Margin" Value="1,0" />
+                      <Setter Property="Padding" Value="3,7" />
+                      <Setter Property="HorizontalContentAlignment" Value="Center" />
+                      <Setter Property="Template">
+                        <Setter.Value>
+                          <ControlTemplate TargetType="ListBoxItem">
+                            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="1" CornerRadius="5" Padding="{TemplateBinding Padding}">
+                              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                          </ControlTemplate>
+                        </Setter.Value>
+                      </Setter>
+                      <Style.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter Property="BorderBrush" Value="#78E0C4" /></Trigger>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="#EDF2FA" /></Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                          <Setter Property="Foreground" Value="#78E0C4" />
+                          <Setter Property="Background" Value="#17382F" />
+                          <Setter Property="BorderBrush" Value="#78E0C4" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.35" /></Trigger>
+                      </Style.Triggers>
+                    </Style>
+                  </ListBox.ItemContainerStyle>
+                  <ListBox.ItemTemplate>
+                    <DataTemplate>
+                      <Path Width="18" Height="18" Stretch="Uniform"
+                            Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ListBoxItem}}">
+                        <Path.Style>
+                          <Style TargetType="Path">
+                            <Style.Triggers>
+                              <DataTrigger Binding="{Binding}" Value="{x:Static core:Role.Top}">
+                                <Setter Property="Data" Value="M1,1 H23 V7 H7 V23 H1 Z M10,10 H22 V22 H10 Z" />
+                              </DataTrigger>
+                              <DataTrigger Binding="{Binding}" Value="{x:Static core:Role.Jungle}">
+                                <Setter Property="Data" Value="M3,1 L10,9 L11,15 L8,12 L3,8 Z M21,1 L14,9 L13,15 L16,12 L21,8 Z M1,10 L8,16 L12,23 L16,16 L23,10 L21,19 L12,26 L3,19 Z" />
+                              </DataTrigger>
+                              <DataTrigger Binding="{Binding}" Value="{x:Static core:Role.Middle}">
+                                <Setter Property="Data" Value="M1,1 H13 L8,6 H6 V8 L1,13 Z M23,23 H11 L16,18 H18 V16 L23,11 Z M1,19 L19,1 H24 V6 L6,24 H1 Z" />
+                              </DataTrigger>
+                              <DataTrigger Binding="{Binding}" Value="{x:Static core:Role.Bottom}">
+                                <Setter Property="Data" Value="M1,17 H17 V1 H23 V23 H1 Z M2,2 H14 V14 H2 Z" />
+                              </DataTrigger>
+                              <DataTrigger Binding="{Binding}" Value="{x:Static core:Role.Support}">
+                                <Setter Property="Data" Value="M9,1 H15 L17,5 L12,10 L7,5 Z M1,6 L9,10 L12,14 L15,10 L23,6 L20,14 L15,16 L14,23 H10 L9,16 L4,14 Z" />
+                              </DataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </Path.Style>
+                      </Path>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
               </StackPanel>
               <StackPanel Grid.Column="1" Margin="0,3,8,3">
                 <TextBlock Text="Buscar campeón" Margin="0,0,0,3" />
@@ -442,7 +513,7 @@
                 <TextBlock Text="Define tus prioridades" FontSize="24" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,5,0,0" />
                 <TextBlock Text="El sistema omite cualquier campeón que un compañero tenga preseleccionado." Foreground="#A6B5C9" TextWrapping="Wrap" Margin="0,5,0,0" />
                 <CheckBox x:Name="AutoBanBox" Checked="AutomationChanged" Unchecked="AutomationChanged" Margin="0,5,0,0">
-                  <TextBlock Text="Banear automáticamente en los últimos 8 segundos" TextWrapping="Wrap" />
+                  <TextBlock Text="Banear automáticamente al comenzar tu turno" TextWrapping="Wrap" />
                 </CheckBox>
                 <StackPanel Margin="0,3,8,3">
                   <TextBlock Text="Línea" Margin="0,0,0,3" />
