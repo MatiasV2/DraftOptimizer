@@ -133,9 +133,9 @@ public sealed partial class MainWindow : Window
             if (filtered.Count != profiles.Count) await Store.SaveAsync(filtered);
             ReplaceProfiles(filtered); _profilesValid = true;
         }
-        catch (Exception ex) { ReplaceProfiles([]); _profilesValid = false; Show("No se pudieron leer tus perfiles", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); ReplaceProfiles([]); _profilesValid = false; Show("No se pudieron leer tus perfiles", ex.Message, InfoBarSeverity.Error); }
         try { _favorites = await new FavoriteSettingsStore(directory).LoadAsync(); _favoritesValid = true; }
-        catch (Exception ex) { _favoritesValid = false; _favorites = new() { AutoHoverEnabled = false }; Show("No se pudieron leer los favoritos", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); _favoritesValid = false; _favorites = new() { AutoHoverEnabled = false }; Show("No se pudieron leer los favoritos", ex.Message, InfoBarSeverity.Error); }
         _editing = null;
         UpdateAutomationControls();
     }
@@ -163,7 +163,7 @@ public sealed partial class MainWindow : Window
             if (await _firebase.RestoreSessionAsync(_closed.Token)) await ActivateFirebaseUserAsync();
             else SetFirebaseUi();
         }
-        catch (Exception ex) { SetFirebaseUi(); CloudSyncStatus.Text = "Sesión sin conexión · " + ex.Message; }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); SetFirebaseUi(); CloudSyncStatus.Text = "Sesión sin conexión · " + ex.Message; }
     }
 
     private async Task ActivateFirebaseUserAsync()
@@ -272,14 +272,14 @@ public sealed partial class MainWindow : Window
     {
         if (_busy) return;
         try { await SignInFirebaseAsync(createAccount: false); }
-        catch (Exception ex) { CloudSyncStatus.Text = "No se pudo iniciar sesión · " + ex.Message; Show("Firebase", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); CloudSyncStatus.Text = "No se pudo iniciar sesión · " + ex.Message; Show("Firebase", ex.Message, InfoBarSeverity.Error); }
     }
 
     private async void FirebaseRegisterClick(object sender, RoutedEventArgs e)
     {
         if (_busy) return;
         try { await SignInFirebaseAsync(createAccount: true); }
-        catch (Exception ex) { CloudSyncStatus.Text = "No se pudo crear la cuenta · " + ex.Message; Show("Firebase", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); CloudSyncStatus.Text = "No se pudo crear la cuenta · " + ex.Message; Show("Firebase", ex.Message, InfoBarSeverity.Error); }
     }
 
     private async void FirebaseSignOutClick(object sender, RoutedEventArgs e)
@@ -315,7 +315,7 @@ public sealed partial class MainWindow : Window
             UpdateAutomationControls();
             await SyncCloudAsync();
         }
-        catch (Exception ex) { Show("No se pudo importar la configuración local", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); Show("No se pudo importar la configuración local", ex.Message, InfoBarSeverity.Error); }
     }
 
     private void QueueCloudSync()
@@ -396,6 +396,7 @@ public sealed partial class MainWindow : Window
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return false; }
         catch (Exception ex)
         {
+            ErrorLog.Write("MainWindow.xaml", ex);
             CloudSyncStatus.Text = "Cambios guardados localmente · error al sincronizar: " + ex.Message;
             return false;
         }
@@ -459,15 +460,15 @@ public sealed partial class MainWindow : Window
             CloudSyncStatus.Text = $"Sincronizado · {_firebase.Email ?? _firebase.UserId} · cambios recibidos de otro dispositivo.";
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { CloudSyncStatus.Text = "Sesión activa · no se pudo revisar la nube: " + ex.Message; }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); CloudSyncStatus.Text = "Sesión activa · no se pudo revisar la nube: " + ex.Message; }
     }
-    private async Task RunAsync(Func<Task> action, string success, bool showSuccess = true)
+    private async Task RunAsync(Func<Task> action, string success, bool showSuccess = true, bool alertOnFailure = false)
     {
         if (_busy) return;
         _busy = true;
         try { await action(); if (showSuccess) Show(success, "", InfoBarSeverity.Success); }
         catch (OperationCanceledException) when (_closed.IsCancellationRequested) { }
-        catch (Exception ex) { Show("No se pudo completar", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); Show("No se pudo completar", ex.Message, InfoBarSeverity.Error); if (alertOnFailure) ShowBuildAlert(ex.Message); }
         finally { _busy = false; }
     }
     private void BindCatalog(Dataset data)
@@ -533,7 +534,7 @@ public sealed partial class MainWindow : Window
             catch (Exception ex) when (ex is not OperationCanceledException)
             { Show("Catálogo disponible sin contexto", "El orden usa solo estadísticas base. " + ex.Message, InfoBarSeverity.Warning); }
         }
-        catch (Exception ex) { Show(_data == null ? "No se pudo cargar el catálogo" : "Estadísticas Diamante+ pendientes", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); Show(_data == null ? "No se pudo cargar el catálogo" : "Estadísticas Diamante+ pendientes", ex.Message, InfoBarSeverity.Error); }
         finally { _initializing = false; _loadingData = false; }
     }
     private async Task PollAsync(bool allowWhileBusy = false)
@@ -577,8 +578,9 @@ public sealed partial class MainWindow : Window
             }
             else if (_draft?.CurrentBan == null) { _autoBanAttempted = null; await AdvanceAutomationAsync(); }
         }
-        catch (Exception) when (!_closed.IsCancellationRequested)
+        catch (Exception ex) when (!_closed.IsCancellationRequested)
         {
+            ErrorLog.Write("Sondeo del cliente de League", ex);
             _lcu.Disconnect(); _draft = null; _pickable = null; _followedChampion = 0;
             _timer.Interval = TimeSpan.FromSeconds(2);
             _autoDraft.PauseCurrentTurn();
@@ -631,7 +633,7 @@ public sealed partial class MainWindow : Window
                             lock (_aramStats) _aramStats[(data.Patch, champion.Id)] = stat;
                         }
                         catch (OperationCanceledException) { throw; }
-                        catch (Exception ex) { statErrors.Enqueue($"{champion.Name}: {ex.Message}"); }
+                        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); statErrors.Enqueue($"{champion.Name}: {ex.Message}"); }
                         finally { limiter.Release(); }
                     }));
                 }
@@ -675,7 +677,7 @@ public sealed partial class MainWindow : Window
             IncrementalCollection.Synchronize(_championRows, rows);
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { if (version == _suggestionsVersion && !_closed.IsCancellationRequested) { _lastSuggestions = null; Show("No se pudo actualizar la lista", ex.Message, InfoBarSeverity.Warning); } }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); if (version == _suggestionsVersion && !_closed.IsCancellationRequested) { _lastSuggestions = null; Show("No se pudo actualizar la lista", ex.Message, InfoBarSeverity.Warning); } }
         finally { if (ReferenceEquals(_suggestionsCancellation, cancellation)) _suggestionsCancellation = null; cancellation.Dispose(); }
     }
     private void UpdateDraftWinrate(DraftSession? snapshot, DraftComputationResult work)
@@ -696,7 +698,15 @@ public sealed partial class MainWindow : Window
             (result.InferredRoles > 0 ? $" {result.InferredRoles} roles estimados (*)." : ""));
     }
     private void SetDraftSummary(string text) { DraftWinrateText.Text = text; ChampionDraftSummary.Text = text; }
-    private void SetLoadoutStatus(string text) { LoadoutStatus.Text = text; ChampionLoadoutSummary.Text = text; UpdateLoadoutPreview(); }
+    private void SetLoadoutStatus(string text)
+    {
+        LoadoutStatus.Text = text; ChampionLoadoutSummary.Text = text; UpdateLoadoutPreview();
+        if (_loadout.Error != null && _notifiedLoadoutFailure != _loadout.FailureId)
+        {
+            _notifiedLoadoutFailure = _loadout.FailureId;
+            ShowBuildAlert(text, () => { _loadout.Reset(); _ = PollAsync(); });
+        }
+    }
     private void UpdatePickButtons()
     {
         bool enabled = _lcu.Connected && _draft?.IsAram != true && _draft?.CurrentPick != null && SelectedChampion != null && (_pickable?.Contains(SelectedChampion.Id) ?? false);
@@ -944,6 +954,7 @@ public sealed partial class MainWindow : Window
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            ErrorLog.Write("MainWindow.xaml", ex);
             ProfileSaveStatus.Text = "No se pudo guardar automáticamente · " + ex.Message;
         }
         finally
@@ -985,7 +996,7 @@ public sealed partial class MainWindow : Window
         Show("Build de Lolalytics cargada", profile.Spell1Id > 0
             ? "Se cargaron runas, objetos y hechizos de invocador."
             : "Lolalytics no entregó una pareja de hechizos compatible para esta build.", InfoBarSeverity.Success);
-    }, "Build cargada", showSuccess: false);
+    }, "Build cargada", showSuccess: false, alertOnFailure: true);
 
     private void OpenLolalyticsClick(object sender, RoutedEventArgs e)
     {
@@ -1006,11 +1017,11 @@ public sealed partial class MainWindow : Window
     private async void ImportSummonerSpellsClick(object sender, RoutedEventArgs e) => await RunAsync(async () =>
     {
         var profile = ReadProfile();
-        await _lcu.ImportSummonerSpellsAsync(profile, _data!, _closed.Token, flashKey: _favorites.FlashKey);
-    }, "Hechizos de invocador aplicados a League");
+        await AutomaticRetry.RunAsync(token => _lcu.ImportSummonerSpellsAsync(profile, _data!, token, flashKey: _favorites.FlashKey), _closed.Token);
+    }, "Hechizos de invocador aplicados a League", alertOnFailure: true);
 
-    private async void ImportRunesClick(object sender, RoutedEventArgs e) => await RunAsync(async () => await _lcu.ImportRunesAsync(ReadProfile(), _data!, _closed.Token), "Runas aplicadas a League");
-    private async void ImportItemsClick(object sender, RoutedEventArgs e) => await RunAsync(async () => { await SaveAsync(); await _lcu.ImportItemsAsync(_editing!, _data!, _closed.Token, retainedProfileIds: RetainedProfileIds(_editing!)); }, "Conjunto enviado y verificado en la cuenta activa de League");
+    private async void ImportRunesClick(object sender, RoutedEventArgs e) => await RunAsync(async () => await AutomaticRetry.RunAsync(token => _lcu.ImportRunesAsync(ReadProfile(), _data!, token), _closed.Token), "Runas aplicadas a League", alertOnFailure: true);
+    private async void ImportItemsClick(object sender, RoutedEventArgs e) => await RunAsync(async () => { await SaveAsync(); await AutomaticRetry.RunAsync(token => _lcu.ImportItemsAsync(_editing!, _data!, token, retainedProfileIds: RetainedProfileIds(_editing!)), _closed.Token); }, "Conjunto enviado y verificado en la cuenta activa de League", alertOnFailure: true);
     private async void LockfileClick(object sender, RoutedEventArgs e)
     {
         var box = new TextBox { Text = _lcu.LockfilePath ?? "", MinWidth = 420 };
@@ -1160,7 +1171,7 @@ public sealed partial class MainWindow : Window
         AutoLockSecondsControl.IsEnabled = AutoLockBox.IsEnabled;
         UpdateAutomationSummary(SelectedRole);
         try { await SaveFavoritesAsync(); }
-        catch (Exception ex) { Show("No se pudo guardar la automatización", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); Show("No se pudo guardar la automatización", ex.Message, InfoBarSeverity.Error); }
     }
     private async void FlashKeyChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -1170,7 +1181,7 @@ public sealed partial class MainWindow : Window
         _favorites.FlashKey = flashKey;
         UpdateLoadoutPreview();
         try { await SaveFavoritesAsync(); }
-        catch (Exception ex) { Show("No se pudo guardar la tecla de Destello", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); Show("No se pudo guardar la tecla de Destello", ex.Message, InfoBarSeverity.Error); }
     }
 
     private async void ImportLeagueFavoritesClick(object sender, RoutedEventArgs e)
@@ -1306,7 +1317,7 @@ public sealed partial class MainWindow : Window
             BanStatusText.Text = $"Baneado automáticamente: {_data?.NameOf(banned) ?? banned.ToString()} · prioridad {role}.";
         }
         catch (OperationCanceledException) when (_closed.IsCancellationRequested) { }
-        catch (Exception ex) { BanStatusText.Text = "No se pudo enviar el baneo automático. " + ex.Message; }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); BanStatusText.Text = "No se pudo enviar el baneo automático. " + ex.Message; }
     }
     private async Task AdvanceAutomationAsync()
     {
@@ -1332,7 +1343,7 @@ public sealed partial class MainWindow : Window
             if (!_closed.IsCancellationRequested) { AutomationText.Text = _autoDraft.Status; UpdateAutomationSummary(role); }
         }
         catch (OperationCanceledException) when (_closed.IsCancellationRequested) { }
-        catch (Exception ex) { if (!_closed.IsCancellationRequested) { AutomationText.Text = "Automatización pausada para este turno. " + ex.Message; UpdateAutomationSummary(role); } }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); if (!_closed.IsCancellationRequested) { AutomationText.Text = "Automatización pausada para este turno. " + ex.Message; UpdateAutomationSummary(role); } }
     }
     private void AdvanceLoadout(ClientState state)
     {
@@ -1367,18 +1378,18 @@ public sealed partial class MainWindow : Window
                 },
                 async (prepared, target, ct) =>
                 {
-                    await _lcu.ImportRunesAsync(prepared, _data!, ct, target);
+                    await AutomaticRetry.RunAsync(token => _lcu.ImportRunesAsync(prepared, _data!, token, target), ct);
                     ct.ThrowIfCancellationRequested();
-                    await _lcu.ImportItemsAsync(prepared, _data!, ct, target, RetainedProfileIds(prepared));
+                    await AutomaticRetry.RunAsync(token => _lcu.ImportItemsAsync(prepared, _data!, token, target, RetainedProfileIds(prepared)), ct);
                     if (prepared.Spell1Id != 0)
                     {
                         ct.ThrowIfCancellationRequested();
-                        await _lcu.ImportSummonerSpellsAsync(prepared, _data!, ct, target, flashKey: _favorites.FlashKey);
+                        await AutomaticRetry.RunAsync(token => _lcu.ImportSummonerSpellsAsync(prepared, _data!, token, target, flashKey: _favorites.FlashKey), ct);
                     }
                 });
             SetLoadoutStatus(_loadout.Status);
         }
-        catch (Exception ex) { _loadout.Reset(); SetLoadoutStatus("Revisa el perfil antes de aplicar automáticamente: " + ex.Message); }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.xaml", ex); _loadout.Reset(); SetLoadoutStatus("Revisa el perfil antes de aplicar automáticamente: " + ex.Message); }
     }
 
     private void SuppressAutomaticLoadoutForCurrentGame(BuildProfile profile)

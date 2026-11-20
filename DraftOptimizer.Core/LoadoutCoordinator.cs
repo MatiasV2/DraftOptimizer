@@ -14,11 +14,14 @@ public sealed class LoadoutCoordinator : IDisposable
     public Task Pending => _application ?? _preparation ?? Task.CompletedTask;
     public string Status { get; private set; } = "Runas y objetos automáticos: esperando tu campeón confirmado.";
     public BuildProfile? Prepared => _ready;
+    public string? Error { get; private set; }
+    public long FailureId { get; private set; }
     public void Reset()
     {
         _cancellation?.Cancel(); _cancellation?.Dispose(); _cancellation = null;
         _key = null; _preparation = _application = null; _ready = null;
         _inputFingerprint = null;
+        Error = null;
     }
     public void Observe(ClientState state, Dataset data, Role fallbackRole, BuildProfile? selected, bool enabled,
         Func<Champion, Role, string, bool, CancellationToken, Task<BuildProfile>> fetch,
@@ -90,7 +93,7 @@ public sealed class LoadoutCoordinator : IDisposable
             await _application;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex) { if (_key == key) { Status = "No se pudo preparar la configuración: " + ex.Message + " Usa Reintentar configuración."; } }
+        catch (Exception ex) { ErrorLog.Write("LoadoutCoordinator", ex); if (_key == key) { Error = ex.Message; FailureId++; Status = "No se pudo preparar la configuración: " + ex.Message + " Usa Reintentar configuración."; } }
     }
     private async Task ApplyAsync(string key, BuildProfile profile, FinalLoadoutTarget target,
         Func<BuildProfile, FinalLoadoutTarget, CancellationToken, Task> apply, CancellationToken ct)
@@ -102,7 +105,7 @@ public sealed class LoadoutCoordinator : IDisposable
             if (_key == key && !ct.IsCancellationRequested) Status = $"{(profile.Spell1Id == 0 ? "Runas y objetos" : "Hechizos, runas y objetos")} aplicados a League: {profile.Name}.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex) { if (_key == key) { Status = "No se completó la aplicación automática: " + ex.Message + " Usa Reintentar configuración."; } }
+        catch (Exception ex) { ErrorLog.Write("LoadoutCoordinator", ex); if (_key == key) { Error = ex.Message; FailureId++; Status = "No se completó la aplicación automática: " + ex.Message + " Usa Reintentar configuración."; } }
     }
     public void Dispose() => Reset();
 }

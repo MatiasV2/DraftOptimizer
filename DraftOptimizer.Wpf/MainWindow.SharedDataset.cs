@@ -19,7 +19,7 @@ public sealed partial class MainWindow
             if (_firebase.CanPublishDataset || _busy || _loadingData || _sharedDatasetPolling) return;
             try { await ApplySharedDatasetAsync(); }
             catch (OperationCanceledException) { }
-            catch (Exception ex) { DataText.Text = "Dataset compartido pendiente · " + ex.Message; }
+            catch (Exception ex) { ErrorLog.Write("MainWindow.SharedDataset", ex); DataText.Text = "Dataset compartido pendiente · " + ex.Message; }
         };
         Closed += (_, _) => _sharedDatasetTimer.Stop();
         _sharedDatasetTimer.Start();

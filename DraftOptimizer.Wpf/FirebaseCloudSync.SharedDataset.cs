@@ -26,7 +26,8 @@ internal sealed partial class FirebaseCloudSync
             }
         }
         catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException or System.Collections.Generic.KeyNotFoundException)
-        { cached = null; }
+        {
+            ErrorLog.Write("FirebaseCloudSync.SharedDataset", ex); cached = null; }
 
         try
         {
@@ -82,6 +83,7 @@ internal sealed partial class FirebaseCloudSync
             ex is IOException or HttpRequestException or TaskCanceledException or JsonException or
                 InvalidOperationException or System.Collections.Generic.KeyNotFoundException or FormatException)
         {
+            ErrorLog.Write("FirebaseCloudSync.SharedDataset", ex);
             if (cached != null) return cached with { Cached = true };
             throw new IOException("No hay un dataset compartido disponible. " + ex.Message, ex);
         }

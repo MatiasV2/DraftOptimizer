@@ -151,6 +151,8 @@ if (args.Length > 0)
 }
 await DiamondStatisticsTests.RunAsync(Check);
 await SharedDatasetTests.RunAsync(Check);
+await AutomaticRetryTests.RunAsync(Check);
+await ErrorLogTests.RunAsync(Check);
 await AutoDraftTests.RunAsync(Check);
 await ConfidenceTests.RunAsync(Check);
 DraftAnalysisTests.Run(Check);

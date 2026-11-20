@@ -76,6 +76,7 @@ public sealed class DiamondStatisticsProvider(HttpClient http, string directory)
         catch (Exception ex) when (!ct.IsCancellationRequested &&
             ex is HttpRequestException or TaskCanceledException or JsonException or InvalidDataException or IOException)
         {
+            ErrorLog.Write("DiamondStatisticsProvider", ex);
             if (File.Exists(path)) return (await Dataset.LoadFileAsync(path, ct), true);
             throw new IOException("No se pudieron completar las estadísticas Diamante+ de Lolalytics. La descarga puede reanudarse al actualizar.", ex);
         }
@@ -103,6 +104,7 @@ public sealed class DiamondStatisticsProvider(HttpClient http, string directory)
         catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException or
             IndexOutOfRangeException or OverflowException or FormatException)
         {
+            ErrorLog.Write("DiamondStatisticsProvider", ex);
             throw new InvalidDataException($"Lolalytics devolvió estadísticas incompletas para el campeón {championId}, {role}, parche {patch}.", ex);
         }
     }

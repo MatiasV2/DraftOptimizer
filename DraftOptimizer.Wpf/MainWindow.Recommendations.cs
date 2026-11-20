@@ -147,13 +147,26 @@ public sealed partial class MainWindow
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception ex)
         {
+            ErrorLog.Write($"Build de Lolalytics · {champion.Name} · {role}", ex);
             if (_draftBuildOptionsKey == key)
             {
                 _updatingBuildOptionControls = false;
                 if (!_personalBuildButtons.Any(button => button.IsChecked == true))
                     BuildOptionsStatus.Text = "No se pudieron cargar las opciones: " + ex.Message;
                 UpdateLoadoutPreview();
+                ShowBuildAlert($"{champion.Name} · {role}" + Environment.NewLine + ex.Message, () =>
+                {
+                    if (_draftBuildOptionsKey != key) return;
+                    _draftBuildOptionsKey = null;
+                    UpdateDraftBuildOptionsForSelection();
+                });
             }
+        }
+        finally
+        {
+            if (ReferenceEquals(_draftBuildOptionsCancellation, cancellation))
+                _draftBuildOptionsCancellation = null;
+            cancellation.Dispose();
         }
     }
 

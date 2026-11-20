@@ -19,18 +19,13 @@ public partial class App : Application
 
     public App()
     {
-        DispatcherUnhandledException += (_, e) =>
+        DispatcherUnhandledException += (_, e) => DraftOptimizer.Core.ErrorLog.Write("Error no controlado de la interfaz", e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
-            try
-            {
-                var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DraftOptimizer", "logs");
-                Directory.CreateDirectory(directory);
-                File.AppendAllText(Path.Combine(directory, "ui-errors.log"), $"{DateTimeOffset.UtcNow:O} {e.Exception}{Environment.NewLine}");
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Preserve the original dispatcher exception.
-            }
+            if (e.ExceptionObject is Exception error)
+                DraftOptimizer.Core.ErrorLog.Write("Error no controlado del proceso", error);
         };
+        System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, e) =>
+            DraftOptimizer.Core.ErrorLog.Write("Error no observado de tarea", e.Exception);
     }
 }

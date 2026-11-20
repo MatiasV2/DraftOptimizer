@@ -219,6 +219,7 @@ public sealed class DatasetProvider(HttpClient http, string directory)
         }
         catch (Exception ex) when (!ct.IsCancellationRequested && ex is (HttpRequestException or TaskCanceledException or JsonException))
         {
+            ErrorLog.Write("Dataset", ex);
             var path = File.Exists(cache) ? cache : Path.Combine(AppContext.BaseDirectory, "Data", name + ".json");
             if (!File.Exists(path)) throw new IOException("Sin estadísticas disponibles; revisa Internet.", ex);
             return (await Dataset.LoadFileAsync(path, ct).ConfigureAwait(false), true);

@@ -113,6 +113,6 @@ public sealed partial class MainWindow
         _favorites.AutoLockSeconds = seconds;
         UpdateAutomationSummary(SelectedRole);
         try { await SaveFavoritesAsync(); }
-        catch (Exception ex) { Show("No se pudo guardar el tiempo de confirmación", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.Interface", ex); Show("No se pudo guardar el tiempo de confirmación", ex.Message, InfoBarSeverity.Error); }
     }
 }

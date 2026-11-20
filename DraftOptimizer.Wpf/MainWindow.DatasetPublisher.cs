@@ -48,7 +48,7 @@ public sealed partial class MainWindow
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { if (!_closed.IsCancellationRequested) CloudSyncStatus.Text = "Publicación del dataset pendiente · " + ex.Message; }
+        catch (Exception ex) { ErrorLog.Write("MainWindow.DatasetPublisher", ex); if (!_closed.IsCancellationRequested) CloudSyncStatus.Text = "Publicación del dataset pendiente · " + ex.Message; }
         finally { _datasetPublishing = false; }
     }
 }

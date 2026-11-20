@@ -21,7 +21,8 @@ public sealed partial class MainWindow
             if (File.Exists(ConfidenceCachePath))
                 WinrateConfidence.Configure(Json.Read<double>(await File.ReadAllTextAsync(ConfidenceCachePath)));
         }
-        catch (Exception ex) when (ex is IOException or JsonException or ArgumentOutOfRangeException) { }
+        catch (Exception ex) when (ex is IOException or JsonException or ArgumentOutOfRangeException) {
+            ErrorLog.Write("MainWindow.RemoteConfidence", ex); }
         _confidenceTimer.Tick += async (_, _) => await PollConfidenceAsync();
         Closed += (_, _) => _confidenceTimer.Stop();
         await PollConfidenceAsync();
@@ -65,7 +66,8 @@ public sealed partial class MainWindow
         }
         catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or OperationCanceledException or
             JsonException or InvalidOperationException or System.Collections.Generic.KeyNotFoundException or
-            FormatException or ArgumentOutOfRangeException or IOException) { }
+            FormatException or ArgumentOutOfRangeException or IOException) {
+            ErrorLog.Write("MainWindow.RemoteConfidence", ex); }
         finally { _confidencePolling = false; }
     }
 }

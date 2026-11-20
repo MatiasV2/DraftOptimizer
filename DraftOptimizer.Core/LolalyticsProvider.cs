@@ -13,14 +13,14 @@ public sealed class LolalyticsProvider(HttpClient http)
         $"https://lolalytics.com/lol/{champion.Slug}/build/?lane={role.ToString().ToLowerInvariant()}&tier={DefaultTier}&region=all&patch={Uri.EscapeDataString(string.Join('.', patch.Split('.').Take(2)))}";
     public async Task<BuildProfile> GetAsync(Champion champion, Role role, string patch, CancellationToken ct = default)
     {
-        var html = await http.GetStringAsync(PageUrl(champion, role, patch), ct).ConfigureAwait(false);
+        var html = await AutomaticRetry.RunAsync(token => http.GetStringAsync(PageUrl(champion, role, patch), token), ct).ConfigureAwait(false);
         var profile = await Task.Run(() => ParsePage(html, champion.Id, role, patch, expectedTier: DefaultTier), ct).ConfigureAwait(false);
         profile.Name = $"{champion.Name} - {role}";
         return profile;
     }
     public async Task<BuildRecommendationOptions> GetOptionsAsync(Champion champion, Role role, string patch, CancellationToken ct = default)
     {
-        var html = await http.GetStringAsync(PageUrl(champion, role, patch), ct).ConfigureAwait(false);
+        var html = await AutomaticRetry.RunAsync(token => http.GetStringAsync(PageUrl(champion, role, patch), token), ct).ConfigureAwait(false);
         var options = await Task.Run(() => ParsePageOptions(html, champion.Id, role, patch, expectedTier: DefaultTier), ct).ConfigureAwait(false);
         options.Popular.Profile.Name = $"{champion.Name} - {role} - más popular";
         options.HighestWinrate.Profile.Name = $"{champion.Name} - {role} - mejor WR";
@@ -30,14 +30,14 @@ public sealed class LolalyticsProvider(HttpClient http)
         $"https://lolalytics.com/lol/{champion.Slug}/aram/build/?tier={AramTier}&region=all&patch={Uri.EscapeDataString(string.Join('.', patch.Split('.').Take(2)))}";
     public async Task<BuildProfile> GetAramAsync(Champion champion, string patch, CancellationToken ct = default)
     {
-        var html = await http.GetStringAsync(AramPageUrl(champion, patch), ct).ConfigureAwait(false);
+        var html = await AutomaticRetry.RunAsync(token => http.GetStringAsync(AramPageUrl(champion, patch), token), ct).ConfigureAwait(false);
         var profile = await Task.Run(() => ParsePage(html, champion.Id, Role.Middle, patch, expectedTier: AramTier, isAram: true), ct).ConfigureAwait(false);
         profile.Name = $"{champion.Name} - ARAM";
         return profile;
     }
     public async Task<Suggestion> GetAramStatsAsync(Champion champion, string patch, CancellationToken ct = default)
     {
-        var html = await http.GetStringAsync(AramPageUrl(champion, patch), ct).ConfigureAwait(false);
+        var html = await AutomaticRetry.RunAsync(token => http.GetStringAsync(AramPageUrl(champion, patch), token), ct).ConfigureAwait(false);
         var visible = System.Net.WebUtility.HtmlDecode(Regex.Replace(html, "<[^>]+>", " "));
         var winrate = Regex.Match(visible, @"has\s+(?:a\s+)?([\d.]+)%\s+win rate\b", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(3));
         var games = 0;

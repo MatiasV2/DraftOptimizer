@@ -75,7 +75,7 @@ static class WorkflowTests
         loadout.Reset();
         loadout.Observe(new("ChampSelect", Draft(true)), data, Role.Middle, null, true, (_, _, _, _, _) => throw new IOException("Proveedor no disponible"), Apply);
         await loadout.Pending;
-        check(applies == before && loadout.Status.Contains("No se pudo"), "Fallo de proveedor se informa sin inventar una configuración");
+        check(applies == before && loadout.Status.Contains("No se pudo") && loadout.Error == "Proveedor no disponible" && loadout.FailureId > 0, "Fallo de proveedor expone el motivo y un identificador para mostrar una sola alerta");
         loadout.Reset();
         var wrong = Json.Read<BuildProfile>(Json.Write(personal)); wrong.ChampionId = 80;
         loadout.Observe(new("ChampSelect", Draft(true)), data, Role.Middle, null, true, (_, _, _, _, _) => Task.FromResult(wrong), Apply); await loadout.Pending;
